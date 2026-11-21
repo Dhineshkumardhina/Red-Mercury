@@ -139,6 +139,16 @@ class Settings(BaseSettings):
         """Enforce HTTPS cookie secure flag in production."""
         return self.is_production
 
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def normalize_database_url(cls, v: str) -> str:
+        if isinstance(v, str):
+            if v.startswith("postgres://"):
+                return "postgresql+psycopg://" + v[len("postgres://"):]
+            if v.startswith("postgresql://"):
+                return "postgresql+psycopg://" + v[len("postgresql://"):]
+        return v
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
@@ -184,6 +194,11 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_production_configuration(self) -> "Settings":
         """Strict production configuration validator to prevent silent insecure defaults."""
+        import os
+        railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+        if railway_domain and isinstance(self.ALLOWED_HOSTS, list) and railway_domain not in self.ALLOWED_HOSTS:
+            self.ALLOWED_HOSTS.append(railway_domain)
+
         if self.is_production:
             # 1. Cryptographic Secret Key Security
             if not self.SECRET_KEY or len(self.SECRET_KEY) < 32:

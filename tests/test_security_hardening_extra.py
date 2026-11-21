@@ -58,6 +58,13 @@ def test_production_blocks_null_cors_origin_and_disabled_csrf():
         Settings(**base_kwargs, CORS_ORIGINS=["https://redmercury.xerova.com"], AUTH_RATE_LIMITING_ENABLED=False)
 
 
+def test_railway_database_url_normalization():
+    s1 = Settings(DATABASE_URL="postgresql://user:pass@host:5432/railway")
+    assert s1.DATABASE_URL == "postgresql+psycopg://user:pass@host:5432/railway"
+    s2 = Settings(DATABASE_URL="postgres://user:pass@host:5432/railway")
+    assert s2.DATABASE_URL == "postgresql+psycopg://user:pass@host:5432/railway"
+
+
 def test_cloudflare_static_assets_security_headers_file_exists():
     headers_file = Path(__file__).resolve().parent.parent / "frontend" / "public" / "_headers"
     assert headers_file.exists(), "Cloudflare Workers Static Assets _headers file is missing"
