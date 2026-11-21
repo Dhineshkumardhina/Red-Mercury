@@ -357,6 +357,19 @@ export async function ensureAuthenticated(force = false): Promise<string | null>
 
   isAuthenticatingPromise = (async () => {
     try {
+      // Only auto-authenticate with local dev seed credentials on localhost / Electron
+      if (typeof window !== 'undefined') {
+        const host = window.location.hostname;
+        const isLocal =
+          host === 'localhost' ||
+          host === '127.0.0.1' ||
+          window.location.protocol === 'file:' ||
+          !!(window as any).electronAPI?.isElectron;
+        if (!isLocal) {
+          return null;
+        }
+      }
+
       const baseUrl = getApiBaseUrl();
       const candidates = [
         baseUrl ? (baseUrl + '/api/v1/auth/login') : '/api/v1/auth/login',
@@ -372,7 +385,8 @@ export async function ensureAuthenticated(force = false): Promise<string | null>
               password: 'XerovaDevPass2026!',
             }),
           });
-          if (res.ok) {
+          const ct = res.headers?.get?.('content-type') || '';
+          if (res.ok && !ct.includes('text/html')) {
             const data = await res.json();
             if (data?.access_token) {
               setAuthToken(data.access_token);
@@ -498,6 +512,15 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retryCoun
         }
       }
 
+      const contentType = res.headers?.get?.('content-type') || '';
+      if (contentType.includes('text/html')) {
+        throw new ApiError(
+          'Backend API is not connected to this deployment. Deploy the FastAPI backend and set VITE_API_BASE_URL, or run locally with npm run dev.',
+          503,
+          'BACKEND_NOT_CONFIGURED'
+        );
+      }
+
       if (res.ok && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('redmercury:api-connected'));
       }
@@ -542,7 +565,16 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retryCoun
         throw new ApiError(msg, res.status, code, details, requestId, retryAfter, false);
       }
 
-      const data = await res.json() as T;
+      let data: T;
+      try {
+        data = await res.json() as T;
+      } catch {
+        throw new ApiError(
+          'Backend API returned a non-JSON response. Set VITE_API_BASE_URL to your FastAPI backend URL or run the backend locally.',
+          502,
+          'INVALID_API_RESPONSE'
+        );
+      }
       if (isGet) {
         microCache.set(cacheKey, { data, expiresAt: Date.now() + CACHE_TTL_MS });
       }
