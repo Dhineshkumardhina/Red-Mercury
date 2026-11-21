@@ -1,0 +1,223 @@
+name: "Red Mercury — Code Review Security Gate"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: ["main", "master", "develop"]
+
+# Strictly adhere to least-privilege GitHub permissions
+permissions:
+  contents: read        # Read repository code and commit diff
+  pull-requests: write  # Post security review summary comment to PR
+  checks: write         # Create check runs on the commit
+  issues: read
+
+concurrency:
+  group: redmercury-gate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-gate:
+    name: "Red Mercury Security Gate & Fix Verification"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: "Checkout repository code (full depth for commit correlation)"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Set up Python Environment"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: "Install Security Scanners & CI Gate Dependencies"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install semgrep bandit pip-audit requests
+
+      - name: "Execute Red Mercury CI Security Gate"
+        id: gate
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          mkdir -p .redmercury_artifacts
+          echo "Starting Red Mercury Security Gate on Head SHA ${HEAD_SHA} (Base ${BASE_SHA})..."
+          
+          # Initialize sentinel exit code to indicate failure/uninitialized
+          GATE_EXIT_CODE=255
+          
+          # Run gate with errexit temporarily disabled so non-zero code is captured reliably
+          set +e
+          python -m scripts.ci_security_gate \
+            --repo-path . \
+            --head-sha "${HEAD_SHA}" \
+            --base-sha "${BASE_SHA}" \
+            --pr-number "${PR_NUMBER}" \
+            --fail-on HIGH \
+            --strict-checks \
+            --format json \
+            --output-file .redmercury_artifacts/ci_gate_result.json
+          
+          GATE_EXIT_CODE=$?
+          set -e
+          
+          echo "Captured Gate Exit Code: ${GATE_EXIT_CODE}"
+          echo "GATE_EXIT_CODE=${GATE_EXIT_CODE}" >> "$GITHUB_ENV"
+          echo "gate_exit_code=${GATE_EXIT_CODE}" >> "$GITHUB_OUTPUT"
+
+      - name: "Validate Result Artifact Integrity"
+        id: validate_artifact
+        if: always()
+        run: |
+          RESULT_FILE=".redmercury_artifacts/ci_gate_result.json"
+          echo "Validating security gate evaluation artifact at ${RESULT_FILE}..."
+          
+          if [ ! -f "${RESULT_FILE}" ]; then
+            echo "❌ ERROR: Evaluation artifact '${RESULT_FILE}' was not created!"
+            echo "artifact_valid=false" >> "$GITHUB_OUTPUT"
+            echo "ARTIFACT_VALID=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          
+          # Validate JSON structure and required fields using python
+          python -c "
+          import json, sys
+          try:
+              with open('${RESULT_FILE}', 'r', encoding='utf-8') as f:
+                  data = json.load(f)
+              required = ['gate_status', 'exit_code', 'gate_passed', 'metrics']
+              missing = [k for k in required if k not in data]
+              if missing:
+                  print(f'❌ ERROR: Evaluation artifact missing required fields: {missing}')
+                  sys.exit(1)
+              print(f'✅ Artifact validated: status={data[\"gate_status\"]}, exit_code={data[\"exit_code\"]}, gate_passed={data[\"gate_passed\"]}')
+          except Exception as exc:
+              print(f'❌ ERROR: Artifact JSON invalid or corrupted: {exc}')
+              sys.exit(1)
+          "
+          
+          VAL_STATUS=$?
+          if [ "${VAL_STATUS}" -eq 0 ]; then
+            echo "artifact_valid=true" >> "$GITHUB_OUTPUT"
+            echo "ARTIFACT_VALID=true" >> "$GITHUB_ENV"
+          else
+            echo "artifact_valid=false" >> "$GITHUB_OUTPUT"
+            echo "ARTIFACT_VALID=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: "Upload Machine-Readable Evaluation Artifact"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redmercury-ci-evaluation-${{ github.event.pull_request.number || github.sha }}
+          path: .redmercury_artifacts/ci_gate_result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: "Publish Pull Request Security Summary Comment"
+        if: always() && github.event.pull_request.number != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const resultPath = '.redmercury_artifacts/ci_gate_result.json';
+            
+            let body = "";
+            if (!fs.existsSync(resultPath)) {
+              body = "### 🛡️ Red Mercury — Security Gate Alert\n\n❌ **Security Gate Evaluation Error:** Evaluation artifact was not generated. Internal gate execution error.";
+            } else {
+              try {
+                const rawData = fs.readFileSync(resultPath, 'utf8');
+                const data = JSON.parse(rawData);
+                body = data.summary_markdown || "### Red Mercury Security Summary\n*Evaluation completed.*";
+              } catch (e) {
+                body = `### 🛡️ Red Mercury — Security Gate Alert\n\n❌ **Security Gate Evaluation Error:** Artifact is malformed JSON (${e.message}).`;
+              }
+            }
+            
+            // Mask any credential patterns before posting to PR comment to guarantee zero secret leaks
+            body = body.replace(/AKIA[0-9A-Z]{16}/g, "[REDACTED_AWS_KEY]")
+                       .replace(/ghp_[a-zA-Z0-9]{36}/g, "[REDACTED_GITHUB_TOKEN]")
+                       .replace(/glpat-[a-zA-Z0-9_\-]{20}/g, "[REDACTED_GITLAB_TOKEN]")
+                       .replace(/sk_live_[0-9a-zA-Z]{24}/g, "[REDACTED_STRIPE_KEY]");
+            
+            const prNumber = context.issue.number || context.payload.pull_request.number;
+            
+            // Search for existing comment from Red Mercury to update instead of spamming
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user && (comment.user.type === 'Bot' || comment.user.login.includes('github-actions')) &&
+              comment.body.includes('Red Mercury')
+            );
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+              console.log(`Updated existing PR security comment #${botComment.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: body
+              });
+              console.log("Created new PR security comment.");
+            }
+
+      - name: "Enforce DevSecOps Gate Decision"
+        if: always()
+        run: |
+          echo "=========================================================="
+          echo "Red Mercury Security Gate Enforcement Decision"
+          echo "=========================================================="
+          
+          # 1. Verify gate execution was reached and exit code is present
+          if [ -z "${GATE_EXIT_CODE:-}" ]; then
+            echo "❌ Gate ERROR: Missing or unset GATE_EXIT_CODE. Gate did not execute to completion."
+            exit 1
+          fi
+          
+          # 2. Check that artifact was generated and valid
+          if [ "${ARTIFACT_VALID:-}" != "true" ]; then
+            echo "❌ Gate ERROR: Required evaluation artifact is missing, malformed, or unparseable."
+            exit 1
+          fi
+          
+          echo "Evaluating Gate Exit Code: ${GATE_EXIT_CODE}"
+          
+          # 3. Strictly evaluate exit code
+          case "${GATE_EXIT_CODE}" in
+            0)
+              echo "✅ Gate PASSED: All security checks clean, zero policy violations."
+              exit 0
+              ;;
+            1)
+              echo "❌ Gate FAILED: Security policy violated (new/regressed High or Critical findings detected or check execution failed)."
+              echo "Review the PR comments and reproduction instructions before re-requesting review."
+              exit 1
+              ;;
+            2)
+              echo "⚠️ Gate INCOMPLETE: Configured security checks were omitted, unavailable, or timed out."
+              echo "Per security policy, unverified code cannot be merged under strict checks. Ensure all required scanners are installed."
+              exit 2
+              ;;
+            *)
+              echo "❌ Gate ERROR: Unexpected or malformed exit code '${GATE_EXIT_CODE}'."
+              exit 1
+              ;;
+          esac

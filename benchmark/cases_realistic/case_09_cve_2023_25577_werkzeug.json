@@ -1,0 +1,62 @@
+{
+  "case_id": "RS-BENCH-REAL-002",
+  "origin": "cve_reproduction_werkzeug_cve_2023_25577",
+  "cve_id": "CVE-2023-25577",
+  "cwe_id": "CWE-400",
+  "vulnerability_category": "resource_management",
+  "description": "Denial of Service via unbounded multipart parts count during form parsing (derived from Werkzeug CVE-2023-25577).",
+  "source_file": "src/multipart_parser.py",
+  "vulnerable_code": "def parse_multipart_parts(raw_body: str, boundary: str) -> list:\n    \"\"\"Parse multipart form fields without limiting total parts count.\n    VULNERABLE: Attacker sending 100,000 tiny parts causes resource exhaustion.\n    \"\"\"\n    delimiter = f\"--{boundary}\"\n    raw_parts = raw_body.split(delimiter)\n    parts = []\n    for chunk in raw_parts:\n        c = chunk.strip()\n        if c and c != \"--\":\n            parts.append(c)\n    return parts\n\ndef get_parser_config() -> dict:\n    return {\"default_boundary\": \"----WebKitFormBoundary123\"}\n",
+  "baseline_revision": "a92b3187c54190e2f183921b74890c1e",
+  "split": "held_out",
+  "baseline_finding": {
+    "rule_id": "RS-DOS-UNBOUNDED",
+    "category": "resource_management",
+    "start_line": 6,
+    "severity": "high"
+  },
+  "existing_unit_test": "from src.multipart_parser import parse_multipart_parts, get_parser_config\n\ndef test_standard_form_parsing():\n    body = \"--b\\nname=alice\\n--b\\nrole=admin\\n--b--\"\n    parts = parse_multipart_parts(body, \"b\")\n    assert len(parts) == 2\n    assert \"name=alice\" in parts[0]\n    assert get_parser_config()[\"default_boundary\"] != \"\"\n",
+  "targeted_regression_test": "import pytest\nfrom src.multipart_parser import parse_multipart_parts\n\ndef test_unbounded_multipart_parts_dos_rejected():\n    large_body = \"--b\\nx\\n\" * 2500 + \"--b--\"\n    with pytest.raises(ValueError):\n        parse_multipart_parts(large_body, \"b\")\n",
+  "candidate_patches": [
+    {
+      "patch_id": "REAL-002-P1",
+      "patch_type": "true_fix",
+      "ground_truth_label": "FIX",
+      "ground_truth_rationale": "True fix: Binds total allowable multipart parts count to 1000 and raises ValueError when exceeded, halting resource exhaustion.",
+      "expected_classification": "VERIFIED",
+      "expected_regression_status": "RESOLVED_BY_DEFINED_CHECKS",
+      "description": "True fix: Enforces maximum parts count limit (1000) on parsed multipart parts.",
+      "unified_diff": "--- a/src/multipart_parser.py\n+++ b/src/multipart_parser.py\n@@ -6,2 +6,4 @@\n     raw_parts = raw_body.split(delimiter)\n+    if len(raw_parts) > 1000:\n+        raise ValueError(\"Exceeded maximum allowed multipart parts count\")\n     parts = []\n"
+    },
+    {
+      "patch_id": "REAL-002-P2",
+      "patch_type": "incomplete_fix",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Incomplete fix: Restricts single part string length but does not constrain the total number of parts, leaving DoS vulnerability open via numerous small parts.",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "STILL_PRESENT",
+      "description": "Incomplete fix: Limits length of each part without bounding total part count.",
+      "unified_diff": "--- a/src/multipart_parser.py\n+++ b/src/multipart_parser.py\n@@ -10,2 +10,2 @@\n-        if c and c != \"--\":\n+        if c and c != \"--\" and len(c) < 10000:\n             parts.append(c)\n"
+    },
+    {
+      "patch_id": "REAL-002-P3",
+      "patch_type": "regressive_fix",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Regressive fix: Sets max parts count to 1, breaking legitimate multi-field forms in existing unit tests.",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "RESOLVED_BY_DEFINED_CHECKS",
+      "description": "Regressive fix: Restricts maximum parts count to 1, causing normal form uploads to fail.",
+      "unified_diff": "--- a/src/multipart_parser.py\n+++ b/src/multipart_parser.py\n@@ -6,2 +6,4 @@\n     raw_parts = raw_body.split(delimiter)\n+    if len(raw_parts) > 1:\n+        raise ValueError(\"Max parts exceeded\")\n     parts = []\n"
+    },
+    {
+      "patch_id": "REAL-002-P4",
+      "patch_type": "security_regression",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Security regression: Solves DoS via part limit but commits hardcoded secret administrative token into module header.",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "NEW",
+      "description": "Security regression: Bounds parts count correctly but introduces hardcoded administrative secret token.",
+      "unified_diff": "--- a/src/multipart_parser.py\n+++ b/src/multipart_parser.py\n@@ -1,7 +1,12 @@\n+# SECURITY REGRESSION: Hardcoded administrative token\n+DEBUG_ADMIN_KEY = \"ghp_abcdefghijklmnopqrstuvwxyz123456\"\n+\n def parse_multipart_parts(raw_body: str, boundary: str) -> list:\n     \"\"\"Parse multipart form fields without limiting total parts count.\n     VULNERABLE: Attacker sending 100,000 tiny parts causes resource exhaustion.\n     \"\"\"\n     delimiter = f\"--{boundary}\"\n     raw_parts = raw_body.split(delimiter)\n+    if len(raw_parts) > 1000:\n+        raise ValueError(\"Exceeded maximum allowed multipart parts count\")\n     parts = []\n"
+    }
+  ]
+}

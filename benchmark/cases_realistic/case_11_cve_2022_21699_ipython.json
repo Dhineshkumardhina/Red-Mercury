@@ -1,0 +1,62 @@
+{
+  "case_id": "RS-BENCH-REAL-004",
+  "origin": "cve_reproduction_ipython_cve_2022_21699",
+  "cve_id": "CVE-2022-21699",
+  "cwe_id": "CWE-426",
+  "vulnerability_category": "broken_access_control",
+  "description": "Arbitrary Code Execution via untrusted search path loading profiles from current working directory (derived from IPython CVE-2022-21699).",
+  "source_file": "src/profile_manager.py",
+  "vulnerable_code": "import os\nfrom pathlib import Path\n\ndef locate_profile_dir(profile_name: str, base_home: str) -> str:\n    \"\"\"Locate configuration profile directory. VULNERABLE: Searches CWD first.\"\"\"\n    cwd_profile = Path.cwd() / f\".profile_{profile_name}\"\n    if cwd_profile.is_dir():\n        return str(cwd_profile)\n    sys_dir = Path(base_home) / \".profiles\" / profile_name\n    return str(sys_dir)\n\ndef get_manager_version() -> str:\n    return \"1.0.0\"\n",
+  "baseline_revision": "d11a84920b13579e831201947a503c18",
+  "split": "held_out",
+  "baseline_finding": {
+    "rule_id": "RS-CWD-SEARCH",
+    "category": "broken_access_control",
+    "start_line": 5,
+    "severity": "medium"
+  },
+  "existing_unit_test": "from pathlib import Path\nfrom src.profile_manager import locate_profile_dir, get_manager_version\n\ndef test_home_profile_resolution(tmp_path):\n    home = tmp_path / \"home\"\n    prof_dir = home / \".profiles\" / \"default\"\n    prof_dir.mkdir(parents=True)\n    res = locate_profile_dir(\"default\", str(home))\n    assert \"default\" in res\n    assert get_manager_version() == \"1.0.0\"\n",
+  "targeted_regression_test": "from pathlib import Path\nfrom src.profile_manager import locate_profile_dir\n\ndef test_untrusted_cwd_profile_ignored(tmp_path, monkeypatch):\n    untrusted_cwd = tmp_path / \"untrusted_repo\"\n    untrusted_cwd.mkdir()\n    fake_profile = untrusted_cwd / \".profile_default\"\n    fake_profile.mkdir()\n    monkeypatch.chdir(untrusted_cwd)\n\n    home = tmp_path / \"home\"\n    safe_profile = home / \".profiles\" / \"default\"\n    safe_profile.mkdir(parents=True)\n\n    result = locate_profile_dir(\"default\", str(home))\n    assert not result.startswith(str(untrusted_cwd))\n",
+  "candidate_patches": [
+    {
+      "patch_id": "REAL-004-P1",
+      "patch_type": "true_fix",
+      "ground_truth_label": "FIX",
+      "ground_truth_rationale": "True fix: Removes CWD search entirely, strictly resolving configuration from the trusted home directory.",
+      "expected_classification": "VERIFIED",
+      "expected_regression_status": "RESOLVED_BY_DEFINED_CHECKS",
+      "description": "True fix: Removes untrusted CWD search path and resolves strictly from base home directory.",
+      "unified_diff": "--- a/src/profile_manager.py\n+++ b/src/profile_manager.py\n@@ -6,4 +6,1 @@\n-    cwd_profile = Path.cwd() / f\".profile_{profile_name}\"\n-    if cwd_profile.is_dir():\n-        return str(cwd_profile)\n     sys_dir = Path(base_home) / \".profiles\" / profile_name\n"
+    },
+    {
+      "patch_id": "REAL-004-P2",
+      "patch_type": "incomplete_fix",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Incomplete fix: Only checks if profile directory name is alphanumeric, but still executes search in CWD.",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "STILL_PRESENT",
+      "description": "Incomplete fix: Validates profile name characters but retains vulnerable CWD lookup.",
+      "unified_diff": "--- a/src/profile_manager.py\n+++ b/src/profile_manager.py\n@@ -6,2 +6,3 @@\n+    clean_name = ''.join(c for c in profile_name if c.isalnum())\n-    cwd_profile = Path.cwd() / f\".profile_{profile_name}\"\n+    cwd_profile = Path.cwd() / f\".profile_{clean_name}\"\n     if cwd_profile.is_dir():\n"
+    },
+    {
+      "patch_id": "REAL-004-P3",
+      "patch_type": "regressive_fix",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Regressive fix: Blindly raises PermissionError on all profile location lookups, breaking existing unit tests.",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "RESOLVED_BY_DEFINED_CHECKS",
+      "description": "Regressive fix: Raises unhandled PermissionError for all profiles, breaking existing unit tests.",
+      "unified_diff": "--- a/src/profile_manager.py\n+++ b/src/profile_manager.py\n@@ -5,5 +5,2 @@\n     \"\"\"Locate configuration profile directory. VULNERABLE: Searches CWD first.\"\"\"\n-    cwd_profile = Path.cwd() / f\".profile_{profile_name}\"\n-    if cwd_profile.is_dir():\n-        return str(cwd_profile)\n-    sys_dir = Path(base_home) / \".profiles\" / profile_name\n-    return str(sys_dir)\n+    raise PermissionError(\"Profile loading is disabled\")\n"
+    },
+    {
+      "patch_id": "REAL-004-P4",
+      "patch_type": "missing_evidence_case",
+      "ground_truth_label": "INCONCLUSIVE",
+      "ground_truth_rationale": "Missing evidence case: Finding RS-CWD-SEARCH is unobserved by configured scanners, and candidate patch diff contains invalid syntax.",
+      "expected_classification": "INCONCLUSIVE",
+      "expected_regression_status": "INCOMPARABLE",
+      "description": "Missing evidence case: Scanner rule unobserved and malformed patch forces inconclusive verdict.",
+      "unified_diff": "--- a/../../../../untrusted_file\n+++ b/../../../../untrusted_file\n@@ -1,1 +1,1 @@\n-bad\n+worse\n"
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "name": "red-mercury",
+  "version": "1.0.0",
+  "description": "Red Mercury - Enterprise Security & Automated Fix Verification Engine",
+  "main": "electron/main.cjs",
+  "author": "Xerova Digital Solutions",
+  "license": "Proprietary",
+  "scripts": {
+    "start": "concurrently -n \"BACKEND,FRONTEND\" -c \"cyan,magenta\" \"npm run backend:dev\" \"npm run frontend:dev\"",
+    "dev": "concurrently -n \"BACKEND,FRONTEND\" -c \"cyan,magenta\" \"npm run backend:dev\" \"npm run frontend:dev\"",
+    "start:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/start_all.ps1",
+    "backend:dev": "python -m uvicorn app.main:app --app-dir backend --reload-dir backend/app --host 127.0.0.1 --port 8001 --reload",
+    "backend:start": "python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8001",
+    "backend:test": "python -m pytest tests/",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build",
+    "frontend:test": "npm --prefix frontend run test",
+    "frontend:lint": "npm --prefix frontend run lint",
+    "lint": "npm --prefix frontend run lint",
+    "build": "npm --prefix frontend run build",
+    "test": "npm --prefix frontend run test && python -m pytest tests/",
+    "desktop": "cross-env NODE_ENV=production electron .",
+    "desktop:dev": "concurrently -k -n \"BACKEND,FRONTEND,ELECTRON\" -c \"cyan,magenta,yellow\" \"npm run backend:dev\" \"npm run frontend:dev\" \"wait-on -t 30000 http://127.0.0.1:3000 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:3000 electron .\"",
+    "desktop:build": "npm run build && electron-builder --win --dir",
+    "desktop:dist": "npm run build && electron-builder --win nsis",
+    "desktop:portable": "npm run build && electron-builder --win portable"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "cross-env": "^10.1.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3",
+    "wait-on": "^9.5.1"
+  },
+  "build": {
+    "appId": "com.xerova.redmercury",
+    "productName": "Red Mercury",
+    "copyright": "Copyright © 2026 Xerova Digital Solutions",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/dist/**/*",
+      "backend/**/*",
+      "build/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Red Mercury"
+    }
+  },
+  "allowScripts": {
+    "electron-winstaller@5.4.0": true
+  }
+}

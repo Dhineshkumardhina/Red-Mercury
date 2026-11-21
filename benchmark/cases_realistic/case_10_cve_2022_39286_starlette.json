@@ -1,0 +1,62 @@
+{
+  "case_id": "RS-BENCH-REAL-003",
+  "origin": "cve_reproduction_starlette_cve_2022_39286",
+  "cve_id": "CVE-2022-39286",
+  "cwe_id": "CWE-22",
+  "vulnerability_category": "path_traversal",
+  "description": "Path Traversal in static file serving on Windows systems (derived from Starlette CVE-2022-39286).",
+  "source_file": "src/static_provider.py",
+  "vulnerable_code": "import os\nfrom pathlib import Path\n\ndef resolve_static_asset(root_dir: str, requested_filename: str) -> str:\n    \"\"\"Serve static asset file. VULNERABLE: Direct path join and normpath allow traversal.\"\"\"\n    cleaned = requested_filename.lstrip(\"/\\\\\")\n    full_path = os.path.normpath(os.path.join(root_dir, cleaned))\n    with open(full_path, \"r\", encoding=\"utf-8\") as f:\n        return f.read()\n\ndef get_asset_info(root_dir: str, requested_filename: str) -> dict:\n    return {\"root\": root_dir, \"file\": requested_filename}\n",
+  "baseline_revision": "c10f3948e712a8395b019842c6710b5a",
+  "split": "held_out",
+  "baseline_finding": {
+    "rule_id": "RS-PATH-TRAVERSAL",
+    "category": "path_traversal",
+    "start_line": 7,
+    "severity": "high"
+  },
+  "existing_unit_test": "from src.static_provider import resolve_static_asset, get_asset_info\n\ndef test_legitimate_static_asset_access(tmp_path):\n    static_root = tmp_path / \"static\"\n    static_root.mkdir()\n    css_dir = static_root / \"css\"\n    css_dir.mkdir()\n    (css_dir / \"app.css\").write_text(\"body { color: blue; }\", encoding=\"utf-8\")\n\n    content = resolve_static_asset(str(static_root), \"css/app.css\")\n    assert \"color: blue\" in content\n    assert get_asset_info(str(static_root), \"css/app.css\")[\"file\"] == \"css/app.css\"\n",
+  "targeted_regression_test": "import pytest\nfrom src.static_provider import resolve_static_asset\n\ndef test_directory_traversal_exploit_fails(tmp_path):\n    secret_file = tmp_path / \"app_secret.key\"\n    secret_file.write_text(\"SUPER_SECRET_HMAC_KEY\", encoding=\"utf-8\")\n    static_root = tmp_path / \"static\"\n    static_root.mkdir()\n\n    with pytest.raises((PermissionError, ValueError)):\n        resolve_static_asset(str(static_root), \"../app_secret.key\")\n",
+  "candidate_patches": [
+    {
+      "patch_id": "REAL-003-P1",
+      "patch_type": "true_fix",
+      "ground_truth_label": "FIX",
+      "ground_truth_rationale": "True fix: Resolves canonical paths for both base root and target, verifying commonpath boundary strictly.",
+      "expected_classification": "VERIFIED",
+      "expected_regression_status": "RESOLVED_BY_DEFINED_CHECKS",
+      "description": "True fix: Uses Path.resolve() and checks boundary confinement inside root_dir.",
+      "unified_diff": "--- a/src/static_provider.py\n+++ b/src/static_provider.py\n@@ -6,3 +6,7 @@\n     cleaned = requested_filename.lstrip(\"/\\\\\")\n-    full_path = os.path.normpath(os.path.join(root_dir, cleaned))\n+    resolved_root = Path(root_dir).resolve()\n+    resolved_target = (resolved_root / cleaned).resolve()\n+    if not str(resolved_target).startswith(str(resolved_root)):\n+        raise PermissionError(\"Path traversal detected outside static root\")\n+    full_path = str(resolved_target)\n     with open(full_path, \"r\", encoding=\"utf-8\") as f:\n"
+    },
+    {
+      "patch_id": "REAL-003-P2",
+      "patch_type": "incomplete_fix",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Incomplete fix: Naively strips single occurrence of '../', which can be bypassed via nested sequences ('....//').",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "STILL_PRESENT",
+      "description": "Incomplete fix: Naive single replace of '../' easily bypassed by nested traversal.",
+      "unified_diff": "--- a/src/static_provider.py\n+++ b/src/static_provider.py\n@@ -6,2 +6,3 @@\n     cleaned = requested_filename.lstrip(\"/\\\\\")\n+    cleaned = cleaned.replace(\"../\", \"\")\n     full_path = os.path.normpath(os.path.join(root_dir, cleaned))\n"
+    },
+    {
+      "patch_id": "REAL-003-P3",
+      "patch_type": "regressive_fix",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Regressive fix: Rejects any filename containing a slash, breaking legitimate nested assets like 'css/app.css'.",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "RESOLVED_BY_DEFINED_CHECKS",
+      "description": "Regressive fix: Forbids any path with directory separators, breaking nested static assets.",
+      "unified_diff": "--- a/src/static_provider.py\n+++ b/src/static_provider.py\n@@ -6,2 +6,4 @@\n     cleaned = requested_filename.lstrip(\"/\\\\\")\n+    if \"/\" in cleaned or \"\\\\\" in cleaned:\n+        raise ValueError(\"Subdirectories not permitted\")\n     full_path = os.path.normpath(os.path.join(root_dir, cleaned))\n"
+    },
+    {
+      "patch_id": "REAL-003-P4",
+      "patch_type": "cosmetic_evasion",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Cosmetic evasion / misleading AI fix: Introduces plausible sanitize helper function and OWASP docstring but leaves path traversal exploitable.",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "STILL_PRESENT",
+      "description": "Cosmetic evasion: Adds helper function with elaborate docstring without actually validating boundaries.",
+      "unified_diff": "--- a/src/static_provider.py\n+++ b/src/static_provider.py\n@@ -4,3 +4,4 @@\n def resolve_static_asset(root_dir: str, requested_filename: str) -> str:\n     \"\"\"Serve static asset file. VULNERABLE: Direct path join and normpath allow traversal.\"\"\"\n+    # Sanitization wrapper for compliance check\n     cleaned = requested_filename.lstrip(\"/\\\\\")\n"
+    }
+  ]
+}

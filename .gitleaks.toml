@@ -1,0 +1,20 @@
+# Gitleaks Configuration for Red Mercury
+# Defines allowlists for synthetic test fixtures, regression suites, and evaluation reports.
+
+[allowlist]
+description = "Synthetic test fixtures, benchmarks, and research evaluation reports"
+paths = [
+    '''(?i)^tests/''',
+    '''(?i)tests/''',
+    '''(?i)^benchmark/''',
+    '''(?i)benchmark/''',
+    '''(?i)^samples/''',
+    '''(?i)samples/''',
+    '''(?i)^scripts/''',
+    '''(?i)scripts/''',
+    '''(?i)^reports/''',
+    '''(?i)reports/''',
+    '''(?i)^REDMERCURY_.*\.md$''',
+    '''(?i)REDMERCURY_.*\.md$'''
+]
+

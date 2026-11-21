@@ -1,0 +1,62 @@
+{
+  "case_id": "RS-BENCH-REAL-001",
+  "origin": "cve_reproduction_requests_cve_2023_32681",
+  "cve_id": "CVE-2023-32681",
+  "cwe_id": "CWE-200",
+  "vulnerability_category": "sensitive_data_exposure",
+  "description": "Exposure of Proxy-Authorization credentials on HTTPS cross-origin redirect in HTTP client (derived from Requests CVE-2023-32681).",
+  "source_file": "src/http_client.py",
+  "vulnerable_code": "import urllib.parse\n\ndef is_same_origin(url1: str, url2: str) -> bool:\n    \"\"\"Check if two URLs share identical origin (scheme, host, port).\"\"\"\n    p1 = urllib.parse.urlsplit(url1)\n    p2 = urllib.parse.urlsplit(url2)\n    # VULNERABLE: Only compares hostname, ignoring scheme or port changes\n    return p1.hostname == p2.hostname\n\ndef prepare_redirect_headers(headers: dict, source_url: str, dest_url: str) -> dict:\n    \"\"\"Prepare request headers for follow-up redirect.\n    VULNERABLE: Only strips 'Authorization', leaking 'Proxy-Authorization' across origins.\n    \"\"\"\n    clean_headers = dict(headers)\n    if not is_same_origin(source_url, dest_url):\n        clean_headers.pop(\"Authorization\", None)\n    return clean_headers\n\ndef get_default_headers() -> dict:\n    return {\"User-Agent\": \"RedMercury-Client/1.0\", \"Accept\": \"*/*\"}\n",
+  "baseline_revision": "b81c1092a0134f598e910243d5012a67",
+  "split": "held_out",
+  "baseline_finding": {
+    "rule_id": "RS-CRED-LEAK",
+    "category": "sensitive_data_exposure",
+    "start_line": 13,
+    "severity": "high"
+  },
+  "existing_unit_test": "from src.http_client import prepare_redirect_headers, get_default_headers\n\ndef test_same_origin_redirect_preserves_custom_headers():\n    headers = {\"Authorization\": \"Bearer secret-token\", \"Custom-Header\": \"persist\", \"Accept\": \"*/*\"}\n    out = prepare_redirect_headers(headers, \"http://api.internal/v1\", \"http://api.internal/v2\")\n    assert out.get(\"Authorization\") == \"Bearer secret-token\"\n    assert out.get(\"Custom-Header\") == \"persist\"\n    assert get_default_headers()[\"User-Agent\"] == \"RedMercury-Client/1.0\"\n",
+  "targeted_regression_test": "import pytest\nfrom src.http_client import prepare_redirect_headers\n\ndef test_cross_origin_redirect_strips_proxy_authorization():\n    sensitive_headers = {\n        \"Authorization\": \"Bearer internal-token\",\n        \"Proxy-Authorization\": \"Basic dXNlcjpwYXNz\",\n        \"Custom-Trace\": \"req-123\"\n    }\n    result = prepare_redirect_headers(sensitive_headers, \"https://api.corp.com/resource\", \"https://evil-thirdparty.com/landing\")\n    assert \"Authorization\" not in result\n    assert \"Proxy-Authorization\" not in result\n    assert result.get(\"Custom-Trace\") == \"req-123\"\n",
+  "candidate_patches": [
+    {
+      "patch_id": "REAL-001-P1",
+      "patch_type": "true_fix",
+      "ground_truth_label": "FIX",
+      "ground_truth_rationale": "True fix: Strips both Authorization and Proxy-Authorization on cross-origin redirects while preserving custom headers on same-origin redirects.",
+      "expected_classification": "VERIFIED",
+      "expected_regression_status": "RESOLVED_BY_DEFINED_CHECKS",
+      "description": "True fix: Strips Proxy-Authorization alongside Authorization on cross-origin redirect.",
+      "unified_diff": "--- a/src/http_client.py\n+++ b/src/http_client.py\n@@ -15,3 +15,4 @@\n     if not is_same_origin(source_url, dest_url):\n         clean_headers.pop(\"Authorization\", None)\n+        clean_headers.pop(\"Proxy-Authorization\", None)\n     return clean_headers\n"
+    },
+    {
+      "patch_id": "REAL-001-P2",
+      "patch_type": "incomplete_fix",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Incomplete fix: Only strips Proxy-Authorization when scheme is http, leaving https redirects vulnerable to credential exposure.",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "STILL_PRESENT",
+      "description": "Incomplete fix: Conditionally strips Proxy-Authorization only on insecure http schemes.",
+      "unified_diff": "--- a/src/http_client.py\n+++ b/src/http_client.py\n@@ -15,3 +15,5 @@\n     if not is_same_origin(source_url, dest_url):\n         clean_headers.pop(\"Authorization\", None)\n+        if dest_url.startswith(\"http://\"):\n+            clean_headers.pop(\"Proxy-Authorization\", None)\n     return clean_headers\n"
+    },
+    {
+      "patch_id": "REAL-001-P3",
+      "patch_type": "regressive_fix",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Regressive fix: Clears all headers on any redirect, failing existing unit tests that expect non-sensitive headers to persist.",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "RESOLVED_BY_DEFINED_CHECKS",
+      "description": "Regressive fix: Clears all headers indiscriminately on any redirect.",
+      "unified_diff": "--- a/src/http_client.py\n+++ b/src/http_client.py\n@@ -14,4 +14,2 @@\n-    clean_headers = dict(headers)\n-    if not is_same_origin(source_url, dest_url):\n-        clean_headers.pop(\"Authorization\", None)\n-    return clean_headers\n+    return {}\n"
+    },
+    {
+      "patch_id": "REAL-001-P4",
+      "patch_type": "cosmetic_evasion",
+      "ground_truth_label": "NON_FIX",
+      "ground_truth_rationale": "Cosmetic evasion: Renames variables and includes comment claiming CVE-2023-32681 is resolved, but leaves Proxy-Authorization unstripped.",
+      "expected_classification": "FAILED",
+      "expected_regression_status": "STILL_PRESENT",
+      "description": "Cosmetic evasion: Refactors variable names with patch comment without actually removing header.",
+      "unified_diff": "--- a/src/http_client.py\n+++ b/src/http_client.py\n@@ -11,3 +11,4 @@\n     \"\"\"Prepare request headers for follow-up redirect.\n+    # Resolved CVE-2023-32681: Header stripping logic\n     VULNERABLE: Only strips 'Authorization', leaking 'Proxy-Authorization' across origins.\n"
+    }
+  ]
+}
