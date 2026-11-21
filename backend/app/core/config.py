@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # Trusted Hosts & Reverse-Proxy Settings
     ALLOWED_HOSTS: Union[List[str], str] = [
         "redmercury.xerova.com",
-        "redmercury.xerova.com",
+        "red-mercury.dhineshkumardhina18.workers.dev",
         "localhost",
         "127.0.0.1",
         "testserver",
@@ -207,6 +207,10 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Wildcard '*' in CORS_ORIGINS is strictly prohibited in production."
                 )
+            if any(o.strip().lower() == "null" for o in origins):
+                raise ValueError(
+                    "The 'null' origin in CORS_ORIGINS is strictly prohibited in production."
+                )
 
             # 4. SSRF Private Network Access Lockdown
             if self.ALLOW_PRIVATE_NETWORKS:
@@ -225,6 +229,16 @@ class Settings(BaseSettings):
             if self.DEBUG:
                 raise ValueError(
                     "DEBUG mode must be False in production deployments to prevent stack trace disclosure."
+                )
+
+            # 7. CSRF & Rate Limiting Enforcement
+            if not self.CSRF_PROTECTION_ENABLED:
+                raise ValueError(
+                    "CSRF_PROTECTION_ENABLED must be True in production deployments."
+                )
+            if not self.AUTH_RATE_LIMITING_ENABLED:
+                raise ValueError(
+                    "AUTH_RATE_LIMITING_ENABLED must be True in production deployments."
                 )
 
         return self

@@ -135,14 +135,14 @@ def create_application() -> FastAPI:
     app.add_middleware(RequestSizeLimitMiddleware)
     app.add_middleware(AuthRateLimitMiddleware)
 
-    # 2. CORS configuration (permits any localhost / 127.0.0.1 port in dev/desktop, exact in prod)
+    # 2. CORS configuration (permits any localhost / 127.0.0.1 port in dev/desktop, exact allowlist only in prod)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
-        allow_origin_regex=r"^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$",
+        allow_origin_regex=None if settings.is_production else r"^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$",
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-CSRF-Token", "Accept", "Origin"],
     )
 
     # 3. Centralized Exception Handlers
@@ -157,14 +157,16 @@ def create_application() -> FastAPI:
     # Root route for API discovery
     @app.get("/", tags=["Discovery"])
     def root_discovery():
-        return {
+        payload = {
             "name": settings.APP_NAME,
             "version": settings.APP_VERSION,
             "organization": settings.ORGANIZATION,
             "status": "operational",
-            "documentation": "/docs",
             "health": f"{settings.API_V1_PREFIX}/health",
         }
+        if docs_url is not None:
+            payload["documentation"] = docs_url
+        return payload
 
     # Top-level health endpoints
     @app.get("/health", tags=["Health & Diagnostics"])

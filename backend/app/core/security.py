@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import re
 import time
 from typing import Any, Dict, Optional
 import uuid
@@ -13,6 +14,7 @@ from .errors import SessionExpiredError, UnauthorizedError
 from .logging import get_logger
 
 logger = get_logger("redmercury.security")
+_SAFE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 def hash_password(password: str) -> str:
@@ -69,8 +71,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Enforces essential AppSec HTTP headers on all outgoing responses."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        # 1. Assign or propagate correlation Request ID
-        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        # 1. Assign or propagate sanitized correlation Request ID (prevents header/log injection)
+        incoming_id = (request.headers.get("X-Request-ID") or "").strip()
+        request_id = incoming_id if _SAFE_REQUEST_ID_RE.match(incoming_id) else str(uuid.uuid4())
         request.state.request_id = request_id
 
         start_time = time.perf_counter()
@@ -81,12 +84,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["X-XSS-Protection"] = "0"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+
+        if request.url.path.startswith("/api/v1/auth/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
 
         if settings.is_production:
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
 
         # Log request completion with correlation info
         logger.info(
@@ -130,19 +140,27 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
 
 
 class InMemoryRateLimiter:
-    """Thread-safe sliding window rate limiter for protecting sensitive authentication endpoints."""
+    """Thread-safe sliding window rate limiter with bounded key capacity to prevent memory DoS."""
 
-    def __init__(self):
+    def __init__(self, max_keys: int = 10000):
         import threading
         from collections import defaultdict, deque
         self._lock = threading.Lock()
         self._requests: Dict[str, deque] = defaultdict(deque)
+        self._max_keys = max_keys
 
     def is_allowed(self, key: str, max_requests: int, window_seconds: int) -> bool:
         import time
         now = time.time()
         cutoff = now - window_seconds
         with self._lock:
+            if len(self._requests) >= self._max_keys and key not in self._requests:
+                stale_keys = [k for k, dq in self._requests.items() if not dq or dq[-1] < cutoff]
+                for k in stale_keys:
+                    del self._requests[k]
+                if len(self._requests) >= self._max_keys:
+                    oldest_key = min(self._requests.items(), key=lambda item: item[1][-1] if item[1] else 0)[0]
+                    del self._requests[oldest_key]
             q = self._requests[key]
             while q and q[0] < cutoff:
                 q.popleft()
@@ -166,6 +184,9 @@ def get_client_ip(request: Request) -> str:
 
     # Only trust proxy headers when request arrives from a trusted proxy IP
     if peer_ip in trusted_proxies:
+        cf_ip = request.headers.get("CF-Connecting-IP")
+        if cf_ip and cf_ip.strip():
+            return cf_ip.strip()
         real_ip = request.headers.get("X-Real-IP")
         if real_ip and real_ip.strip():
             return real_ip.strip()
