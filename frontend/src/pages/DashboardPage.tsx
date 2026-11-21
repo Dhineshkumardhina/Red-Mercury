@@ -95,12 +95,11 @@ export const DashboardPage: React.FC = () => {
             : item
         )
       );
-      showToast(`✓ ${response.message || `Pull Request #${prNumber} approved and merged.`}`, 'success');
+      showToast(response.message || `Pull Request #${prNumber} approved and merged.`, 'success');
       if (activeDiffItem) setActiveDiffItem(null);
     } catch (err: any) {
-      // Honest state: Red Mercury does not fabricate successful merges
-      const errMsg = err?.message || 'Automated merge unavailable. Maintainers must merge directly on GitHub.';
-      showToast(`⚠️ Direct Merge Unavailable: ${errMsg}`, 'warning');
+      const errMsg = err?.message || 'Automated merge unavailable. Merge directly on GitHub.';
+      showToast(errMsg, 'warning');
     } finally {
       setIsMerging(false);
     }
@@ -152,9 +151,9 @@ export const DashboardPage: React.FC = () => {
         });
       }
 
-      showToast(`✓ Sandbox rerun finished: ${run.status} (${run.test_summary || 'evaluated'})`, 'success');
+      showToast(`Sandbox rerun finished: ${run.status}`, 'success');
     } catch (err: any) {
-      showToast(`❌ Sandbox rerun failed: ${err.message}`, 'error');
+      showToast(`Sandbox rerun failed: ${err.message}`, 'error');
     } finally {
       setIsRerunningSandbox(false);
     }
@@ -163,23 +162,16 @@ export const DashboardPage: React.FC = () => {
   return (
     <>
       {toastMessage && (
-        <div className={`fixed bottom-5 right-5 z-50 px-4 py-3 rounded-lg shadow-lg font-mono text-xs flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200 ${
-          toastMessage.type === 'error'
-            ? 'bg-rose-950 border border-rose-700 text-rose-200'
-            : toastMessage.type === 'warning'
-            ? 'bg-amber-950 border border-amber-700 text-amber-200'
-            : 'bg-slate-900 border border-slate-700 text-white'
-        }`}>
-          <span className={`material-symbols-outlined text-base ${
+        <div
+          className={`fixed bottom-5 right-5 z-50 px-3.5 py-2.5 rounded-md shadow-md text-xs font-medium border ${
             toastMessage.type === 'error'
-              ? 'text-rose-400'
+              ? 'bg-rose-950 border-rose-800 text-rose-100'
               : toastMessage.type === 'warning'
-              ? 'text-amber-400'
-              : 'text-emerald-400'
-          }`}>
-            {toastMessage.type === 'error' ? 'error' : toastMessage.type === 'warning' ? 'warning' : 'task_alt'}
-          </span>
-          <span>{toastMessage.text}</span>
+              ? 'bg-amber-950 border-amber-800 text-amber-100'
+              : 'bg-slate-900 border-slate-700 text-white'
+          }`}
+        >
+          {toastMessage.text}
         </div>
       )}
 

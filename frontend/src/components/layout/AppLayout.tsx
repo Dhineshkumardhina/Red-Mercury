@@ -19,13 +19,12 @@ export interface AppLayoutProps {
   onTriggerScan?: () => void;
 }
 
-export const AppLayout: React.FC<AppLayoutProps> = ({ children, onTriggerScan }) => {
+export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, isLoading, logout } = useAuth();
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
 
   if (isLoading) {
     return (
@@ -121,23 +120,15 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children, onTriggerScan })
       >
         <div className="flex flex-col flex-1 min-h-0">
           {/* Brand Header */}
-          <div className="h-14 px-4 border-b border-slate-100 flex items-center justify-between bg-white shrink-0">
+          <div className="h-14 px-4 border-b border-slate-100 flex items-center bg-white shrink-0">
             <Link to="/dashboard" className="flex items-center gap-2.5 group">
-              <div className="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center shadow-xs group-hover:bg-slate-800 transition-colors">
+              <div className="w-7 h-7 rounded-md bg-slate-900 text-white flex items-center justify-center group-hover:bg-slate-800 transition-colors">
                 <Shield className="w-4 h-4 text-white" />
               </div>
-              <div className="flex flex-col">
-                <span className="font-bold text-sm text-slate-900 tracking-tight leading-none">
-                  Red Mercury
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono tracking-wider uppercase leading-tight mt-0.5">
-                  AppSec Platform
-                </span>
-              </div>
+              <span className="font-semibold text-sm text-slate-900 tracking-tight">
+                Red Mercury
+              </span>
             </Link>
-            <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200/60">
-              v1.2
-            </span>
           </div>
 
           {/* Clean Categorized Navigation */}
@@ -187,14 +178,11 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children, onTriggerScan })
         <div className="p-3 border-t border-slate-100 bg-white shrink-0">
           <div className="flex items-center justify-between p-1.5 rounded-lg hover:bg-slate-50 transition-colors">
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="relative shrink-0">
-                <div className="w-8 h-8 rounded-full bg-slate-900 text-white font-semibold flex items-center justify-center text-xs shadow-2xs">
-                  {user?.fullName ? user.fullName.charAt(0).toUpperCase() : 'D'}
-                </div>
-                <span className="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white"></span>
+              <div className="w-8 h-8 rounded-full bg-slate-900 text-white font-semibold flex items-center justify-center text-xs shrink-0">
+                {user?.fullName ? user.fullName.charAt(0).toUpperCase() : 'D'}
               </div>
               <div className="flex flex-col min-w-0 leading-tight">
-                <span className="font-semibold text-xs text-slate-900 truncate">
+                <span className="font-medium text-xs text-slate-900 truncate">
                   {user?.fullName || 'Dhinesh Kumar'}
                 </span>
                 <span className="text-[11px] text-slate-500 truncate">
@@ -217,16 +205,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children, onTriggerScan })
 
       {/* Main Content Area */}
       <div className="lg:pl-64 flex flex-col flex-1 min-h-screen">
-        {/* Top Navigation Bar */}
-        <Header
-          onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
-          onTriggerScan={onTriggerScan || (() => navigate('/repositories'))}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-        />
+        <Header onOpenMobileMenu={() => setIsMobileMenuOpen(true)} />
 
-        {/* Dynamic Screen View */}
-        <main className="relative pt-14 flex-1">
+        <main className="relative pt-12 lg:pt-0 flex-1">
           {children}
         </main>
       </div>
