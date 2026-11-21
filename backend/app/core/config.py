@@ -196,8 +196,11 @@ class Settings(BaseSettings):
         """Strict production configuration validator to prevent silent insecure defaults."""
         import os
         railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
-        if railway_domain and isinstance(self.ALLOWED_HOSTS, list) and railway_domain not in self.ALLOWED_HOSTS:
-            self.ALLOWED_HOSTS.append(railway_domain)
+        if isinstance(self.ALLOWED_HOSTS, list):
+            if railway_domain and railway_domain not in self.ALLOWED_HOSTS:
+                self.ALLOWED_HOSTS.append(railway_domain)
+            if os.getenv("RAILWAY_ENVIRONMENT") and "healthcheck.railway.app" not in self.ALLOWED_HOSTS:
+                self.ALLOWED_HOSTS.append("healthcheck.railway.app")
 
         if self.is_production:
             # 1. Cryptographic Secret Key Security
