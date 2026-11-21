@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "deploy": "vite build && wrangler deploy",
+    "deploy:dry-run": "vite build && wrangler deploy --dry-run",
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "tsc --noEmit"
@@ -20,6 +22,7 @@
     "react-router-dom": "^7.2.0"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.70.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.2.0",
     "@types/node": "^22.13.4",
@@ -29,7 +32,8 @@
     "tailwindcss": "^4.0.9",
     "typescript": "^5.7.3",
     "vite": "^6.2.0",
-    "vitest": "^3.0.5"
+    "vitest": "^3.0.5",
+    "wrangler": "^4.166.0"
   },
   "overrides": {
     "tinypool": ">=2.1.2"

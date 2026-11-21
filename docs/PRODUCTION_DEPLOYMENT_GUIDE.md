@@ -32,7 +32,7 @@ graph TD
 ### Component Responsibilities & Isolation Invariants
 
 1. **Frontend (React / TypeScript / Vite):**
-   - Served as static compiled assets (`dist/`) via an unprivileged static web server (Nginx Alpine, Cloudflare Pages, AWS S3+CloudFront, or Vercel).
+   - Served as static compiled assets (`dist/`) via Cloudflare Workers (Static Assets), Nginx Alpine, or AWS S3+CloudFront.
    - **Critical Constraint:** Untrusted repository code or scanner binaries **MUST NEVER** execute in the frontend hosting environment. The browser is purely a presentation layer for reviewed findings and reports.
 2. **Backend API (FastAPI / Gunicorn / Uvicorn):**
    - Runs in a containerized environment (AWS ECS Fargate, GCP Cloud Run, or Kubernetes) running under an unprivileged user (`redmercury:10001`).

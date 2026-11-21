@@ -87,8 +87,10 @@ Desktop.ini
 *.swp
 *.swo
 
-# Vercel Deployment Artefacts
-.vercel/
+# Cloudflare Deployment Artefacts
+.cloudflare/
+.wrangler/
+.dev.vars*
 
 
 # Local Binaries & Tools

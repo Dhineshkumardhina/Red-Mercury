@@ -18,6 +18,8 @@
     "frontend:lint": "npm --prefix frontend run lint",
     "lint": "npm --prefix frontend run lint",
     "build": "npm --prefix frontend run build",
+    "deploy": "npm --prefix frontend run deploy",
+    "deploy:dry-run": "npm --prefix frontend run deploy:dry-run",
     "test": "npm --prefix frontend run test && python -m pytest tests/",
     "desktop": "cross-env NODE_ENV=production electron .",
     "desktop:dev": "concurrently -k -n \"BACKEND,FRONTEND,ELECTRON\" -c \"cyan,magenta,yellow\" \"npm run backend:dev\" \"npm run frontend:dev\" \"wait-on -t 30000 http://127.0.0.1:3000 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:3000 electron .\"",
