@@ -21,40 +21,53 @@ from app.models.scan import Scan
 from app.models.user import User
 
 
-def test_production_environment_config_validation():
-    """Verify that production mode strictly rejects SQLite and default insecure secret keys."""
+def test_production_environment_config_validation(monkeypatch):
+    """Verify that production mode strictly rejects SQLite, insecure secrets, and 'null' CORS with isolated env."""
+    for env_key in (
+        "APP_ENV",
+        "DATABASE_URL",
+        "SECRET_KEY",
+        "CORS_ORIGINS",
+        "ALLOWED_HOSTS",
+        "DEBUG",
+        "DOCS_ENABLED",
+        "ALLOW_PRIVATE_NETWORKS",
+        "CSRF_PROTECTION_ENABLED",
+        "AUTH_RATE_LIMITING_ENABLED",
+        "ALLOW_LOCAL_INGESTION_IN_PRODUCTION",
+        "SANDBOX_FAIL_CLOSED",
+        "SANDBOX_ALLOW_HOST_FALLBACK",
+    ):
+        monkeypatch.delenv(env_key, raising=False)
+
+    valid_prod_kwargs = {
+        "_env_file": None,
+        "APP_ENV": "production",
+        "DATABASE_URL": "postgresql+psycopg://user:pass@localhost:5432/prod_db",
+        "SECRET_KEY": "strong_cryptographic_production_key_64_characters_long_for_security!",
+        "CORS_ORIGINS": ["https://redmercury.xerova.com"],
+        "DEBUG": False,
+        "DOCS_ENABLED": False,
+    }
+
     # 1. Rejects SQLite in production
     with pytest.raises(ValueError, match="SQLite cannot be used in production"):
-        Settings(
-            APP_ENV="production",
-            DATABASE_URL="sqlite:///./prod.db",
-            SECRET_KEY="a" * 64,
-        )
+        Settings(**{**valid_prod_kwargs, "DATABASE_URL": "sqlite:///./prod.db"})
 
     # 2. Rejects default insecure secret key in production
     with pytest.raises(ValueError, match="requires a cryptographically strong SECRET_KEY"):
-        Settings(
-            APP_ENV="production",
-            DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/prod_db",
-            SECRET_KEY="dev-insecure-secret-key-32-chars-long!!",
-        )
+        Settings(**{**valid_prod_kwargs, "SECRET_KEY": "dev-insecure-secret-key-32-chars-long!!"})
 
     # 3. Rejects short secret key in production (< 32 chars)
     with pytest.raises(ValueError, match="requires a cryptographically strong SECRET_KEY"):
-        Settings(
-            APP_ENV="production",
-            DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/prod_db",
-            SECRET_KEY="short-secret-key",
-        )
+        Settings(**{**valid_prod_kwargs, "SECRET_KEY": "short-secret-key"})
 
-    # 4. Valid production settings succeed
-    prod_settings = Settings(
-        APP_ENV="production",
-        DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/prod_db",
-        SECRET_KEY="strong_cryptographic_production_key_64_characters_long_for_security!",
-        DEBUG=False,
-        DOCS_ENABLED=False,
-    )
+    # 4. Rejects 'null' origin in production CORS_ORIGINS
+    with pytest.raises(ValueError, match="null"):
+        Settings(**{**valid_prod_kwargs, "CORS_ORIGINS": ["null"]})
+
+    # 5. Valid production settings succeed
+    prod_settings = Settings(**valid_prod_kwargs)
     assert prod_settings.is_production is True
     assert prod_settings.cookie_secure is True
 

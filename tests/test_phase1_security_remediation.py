@@ -372,8 +372,9 @@ def test_infra01_worker_compose_env_passes_production_validation():
     assert prod_worker_settings.sandbox_allow_host_fallback is False
 
 
-def test_infra01_worker_fails_closed_when_secret_key_missing():
+def test_infra01_worker_fails_closed_when_secret_key_missing(monkeypatch):
     """Production worker configuration must raise ValueError when SECRET_KEY is missing."""
+    monkeypatch.delenv("SECRET_KEY", raising=False)
     with pytest.raises(ValueError, match="SECRET_KEY"):
         Settings(
             _env_file=None,

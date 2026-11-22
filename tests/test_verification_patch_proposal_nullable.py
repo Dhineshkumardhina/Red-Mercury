@@ -180,75 +180,83 @@ def test_verification_api_clean_error_on_invalid_input(auth_client: TestClient, 
 
 def test_migration_0010_makes_patch_proposal_id_nullable_in_sqlite():
     """Verify migration 0010 alters SQLite notnull constraint from 1 (in 0009) to 0 (in 0010)."""
+    from pathlib import Path
     from app.core.config import settings
     orig_db_url = settings.DATABASE_URL
 
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name.replace("\\", "/")
+    with tempfile.TemporaryDirectory(prefix="rm_mig0010_") as tmp_dir:
+        db_path = (Path(tmp_dir) / "migration_0010.db").as_posix()
+        disposable_url = f"sqlite:///{db_path}"
 
-    try:
-        settings.DATABASE_URL = f"sqlite:///{db_path}"
-        os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
-        cfg = Config("backend/alembic.ini")
+        try:
+            settings.DATABASE_URL = disposable_url
+            os.environ["DATABASE_URL"] = disposable_url
+            cfg = Config("backend/alembic.ini")
+            cfg.set_main_option("sqlalchemy.url", disposable_url)
 
-        # 1. Establish state at revision 0009 by upgrading and downgrading
-        command.upgrade(cfg, "head")
-        command.downgrade(cfg, "0009_add_commit_sha_to_scans")
+            # 1. Establish state at revision 0009 by upgrading and downgrading
+            command.upgrade(cfg, "head")
+            command.downgrade(cfg, "0009_add_commit_sha_to_scans")
 
-        con = sqlite3.connect(db_path)
-        cur = con.cursor()
-        cur.execute("PRAGMA table_info(verification_runs)")
-        cols_0009 = {row[1]: row for row in cur.fetchall()}
-        # At revision 0009, notnull is 1
-        assert cols_0009["patch_proposal_id"][3] == 1, "At revision 0009, patch_proposal_id must have notnull=1"
-
-        # Attempting to insert NULL patch_proposal_id at revision 0009 raises IntegrityError
-        with pytest.raises(sqlite3.IntegrityError) as exc_info:
-            cur.execute("""
-                INSERT INTO verification_runs (id, patch_proposal_id, status, started_at, created_at, updated_at)
-                VALUES ('vr_should_fail', NULL, 'NOT_TESTED', '2026-10-18 20:00:00', '2026-10-18 20:00:00', '2026-10-18 20:00:00')
-            """)
-        assert "NOT NULL constraint failed: verification_runs.patch_proposal_id" in str(exc_info.value)
-        con.close()
-
-        # 2. Upgrade to revision 0010 (HEAD)
-        command.upgrade(cfg, "head")
-
-        con = sqlite3.connect(db_path)
-        cur = con.cursor()
-        cur.execute("PRAGMA table_info(verification_runs)")
-        cols_0010 = {row[1]: row for row in cur.fetchall()}
-        # In revision 0010, notnull is 0 (nullable)
-        assert cols_0010["patch_proposal_id"][3] == 0, "At revision 0010, patch_proposal_id must have notnull=0"
-
-        # Inserting NULL patch_proposal_id at revision 0010 succeeds without error
-        cur.execute("""
-            INSERT INTO verification_runs (id, patch_proposal_id, status, started_at, created_at, updated_at)
-            VALUES ('vr_should_succeed', NULL, 'NOT_TESTED', '2026-10-18 20:00:00', '2026-10-18 20:00:00', '2026-10-18 20:00:00')
-        """)
-        con.commit()
-
-        cur.execute("SELECT id, patch_proposal_id FROM verification_runs WHERE id = 'vr_should_succeed'")
-        row = cur.fetchone()
-        assert row[0] == "vr_should_succeed"
-        assert row[1] is None
-
-        # 3. Verify downgrade does not fail when NULL rows exist
-        con.close()
-        command.downgrade(cfg, "0009_add_commit_sha_to_scans")
-
-        con = sqlite3.connect(db_path)
-        cur = con.cursor()
-        cur.execute("PRAGMA table_info(verification_runs)")
-        cols_reverted = {row[1]: row for row in cur.fetchall()}
-        assert cols_reverted["patch_proposal_id"][3] == 1
-        con.close()
-
-    finally:
-        settings.DATABASE_URL = orig_db_url
-        os.environ["DATABASE_URL"] = orig_db_url
-        if os.path.exists(db_path):
+            con = sqlite3.connect(db_path)
+            cur = con.cursor()
             try:
-                os.remove(db_path)
-            except Exception:
-                pass
+                cur.execute("PRAGMA table_info(verification_runs)")
+                cols_0009 = {row[1]: row for row in cur.fetchall()}
+                # At revision 0009, notnull is 1
+                assert cols_0009["patch_proposal_id"][3] == 1, "At revision 0009, patch_proposal_id must have notnull=1"
+
+                # Attempting to insert NULL patch_proposal_id at revision 0009 raises IntegrityError
+                with pytest.raises(sqlite3.IntegrityError) as exc_info:
+                    cur.execute("""
+                        INSERT INTO verification_runs (id, patch_proposal_id, status, started_at, created_at, updated_at)
+                        VALUES ('vr_should_fail', NULL, 'NOT_TESTED', '2026-10-18 20:00:00', '2026-10-18 20:00:00', '2026-10-18 20:00:00')
+                    """)
+                assert "NOT NULL constraint failed: verification_runs.patch_proposal_id" in str(exc_info.value)
+                con.rollback()
+            finally:
+                cur.close()
+                con.close()
+
+            # 2. Upgrade to revision 0010 (HEAD)
+            command.upgrade(cfg, "head")
+
+            con = sqlite3.connect(db_path)
+            cur = con.cursor()
+            try:
+                cur.execute("PRAGMA table_info(verification_runs)")
+                cols_0010 = {row[1]: row for row in cur.fetchall()}
+                # In revision 0010, notnull is 0 (nullable)
+                assert cols_0010["patch_proposal_id"][3] == 0, "At revision 0010, patch_proposal_id must have notnull=0"
+
+                # Inserting NULL patch_proposal_id at revision 0010 succeeds without error
+                cur.execute("""
+                    INSERT INTO verification_runs (id, patch_proposal_id, status, started_at, created_at, updated_at)
+                    VALUES ('vr_should_succeed', NULL, 'NOT_TESTED', '2026-10-18 20:00:00', '2026-10-18 20:00:00', '2026-10-18 20:00:00')
+                """)
+                con.commit()
+
+                cur.execute("SELECT id, patch_proposal_id FROM verification_runs WHERE id = 'vr_should_succeed'")
+                row = cur.fetchone()
+                assert row[0] == "vr_should_succeed"
+                assert row[1] is None
+            finally:
+                cur.close()
+                con.close()
+
+            # 3. Verify downgrade does not fail when NULL rows exist
+            command.downgrade(cfg, "0009_add_commit_sha_to_scans")
+
+            con = sqlite3.connect(db_path)
+            cur = con.cursor()
+            try:
+                cur.execute("PRAGMA table_info(verification_runs)")
+                cols_reverted = {row[1]: row for row in cur.fetchall()}
+                assert cols_reverted["patch_proposal_id"][3] == 1
+            finally:
+                cur.close()
+                con.close()
+
+        finally:
+            settings.DATABASE_URL = orig_db_url
+            os.environ["DATABASE_URL"] = orig_db_url

@@ -626,3 +626,19 @@ def test_phase7c_p7b_f07_f08_concurrent_alembic_advisory_lock_and_sqlite_artifac
         )
     finally:
         sqlite_eng.dispose()
+
+
+def test_phase7c_posix_zombie_process_not_misclassified_as_running(monkeypatch):
+    """Phase 8P Regression: Killed child processes in Linux 'Z' (zombie) state must report _is_pid_running=False."""
+    from app.core import jobs as jobs_mod
+
+    monkeypatch.setattr(jobs_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(jobs_mod.os, "kill", lambda pid, sig: None, raising=False)
+
+    # Zombie ('Z') state -> not running
+    monkeypatch.setattr(jobs_mod, "_read_proc_stat_fields", lambda pid: ["Z", "1", "1", "1"])
+    assert jobs_mod._is_pid_running(999991) is False
+
+    # Active sleeping ('S') state -> running
+    monkeypatch.setattr(jobs_mod, "_read_proc_stat_fields", lambda pid: ["S", "1", "1", "1"])
+    assert jobs_mod._is_pid_running(999991) is True

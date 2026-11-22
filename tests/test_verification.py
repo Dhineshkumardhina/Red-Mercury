@@ -1062,3 +1062,165 @@ def test_decision_axiom_passing_tests_alone_cannot_verify_with_persisting_findin
             for cf in result.classified_findings
         )
 
+
+def test_test_execution_error_yields_inconclusive_distinct_from_failed_verification(db_session, test_finding):
+    """Phase 8P Regression: Infrastructure/runner execution errors map to INCONCLUSIVE rather than FAILED_VERIFICATION."""
+    from app.verification.runner import TestExecutionOutcome
+
+    req = VerificationRunRequest(
+        finding_id=test_finding.id,
+        proposed_patch=VALID_SQLI_PATCH,
+        run_existing_tests=True,
+        run_regression_tests=True,
+        regression_test_code="def test_reg(): assert True\n",
+        timeout_seconds=30,
+    )
+
+    with patch("app.verification.service.run_scanners_on_directory") as mock_scan, \
+         patch("app.verification.service.run_pytest_in_workspace") as mock_test:
+        mock_scan.side_effect = [
+            ([], {"bandit": {"version": "1.9.4"}}, ["Bandit not available"]),
+            ([], {"bandit": {"version": "1.9.4"}}, ["Bandit not available"]),
+        ]
+        mock_test.return_value = TestExecutionOutcome(
+            test_suite_name="project_tests",
+            status="error",
+            error_message="Permission denied inside container sandbox",
+        )
+
+        result = execute_fix_verification(req, db=db_session)
+
+        assert result.status == VerificationStatus.INCONCLUSIVE
+        assert len(result.execution_errors) >= 2
+        assert any("error" in err.lower() for err in result.execution_errors)
+
+
+def _mock_resolved_scanner_run():
+    orig_fnd = NormalizedFinding(
+        scanner_name="Semgrep OSS",
+        scanner_rule_id="python.sqlalchemy.security.audit.raw-sql-format",
+        vulnerability_category="CWE-89: SQL Injection",
+        file_path="auth_gateway/dao/user_query.py",
+        start_line=2,
+        severity="HIGH",
+    )
+    return [
+        ([orig_fnd], {"semgrep": {"version": "1.78.0"}}, []),
+        ([], {"semgrep": {"version": "1.78.0"}}, []),
+    ]
+
+
+@pytest.mark.parametrize(
+    "base_status,base_err,patch_status,patch_err,expected_status",
+    [
+        ("timeout", "Baseline runner timed out after 30s", "passed", None, VerificationStatus.INCONCLUSIVE),
+        ("error", "Baseline container launch fault", "passed", None, VerificationStatus.INCONCLUSIVE),
+        ("passed", None, "timeout", "Post-patch runner timed out after 30s", VerificationStatus.INCONCLUSIVE),
+        ("passed", None, "error", "Post-patch sandbox infrastructure fault", VerificationStatus.INCONCLUSIVE),
+    ],
+)
+def test_baseline_and_postpatch_error_or_timeout_yields_inconclusive(
+    db_session, test_finding, base_status, base_err, patch_status, patch_err, expected_status
+):
+    """Phase 8R Regression (RC-2): Baseline or post-patch timeout/error always yields INCONCLUSIVE and never false success."""
+    from app.verification.runner import TestExecutionOutcome
+
+    req = VerificationRunRequest(
+        finding_id=test_finding.id,
+        proposed_patch=VALID_SQLI_PATCH,
+        run_existing_tests=True,
+        run_regression_tests=False,
+        timeout_seconds=30,
+    )
+
+    base_out = TestExecutionOutcome(
+        test_suite_name="project_tests",
+        status=base_status,
+        passed_count=5 if base_status == "passed" else 0,
+        failed_count=0,
+        error_message=base_err,
+    )
+    patched_out = TestExecutionOutcome(
+        test_suite_name="project_tests",
+        status=patch_status,
+        passed_count=5 if patch_status == "passed" else 0,
+        failed_count=0,
+        error_message=patch_err,
+    )
+
+    with patch("app.verification.service.run_scanners_on_directory", side_effect=_mock_resolved_scanner_run()), \
+         patch("app.verification.service.run_pytest_in_workspace", side_effect=[base_out, patched_out]):
+        result = execute_fix_verification(req, db=db_session)
+
+    assert result.status == expected_status
+    assert len(result.execution_errors) >= 1
+    assert any((base_err or patch_err) in err for err in result.execution_errors)
+
+
+def test_genuine_assertion_failure_with_infrastructure_error_preserves_both_and_fails(db_session, test_finding):
+    """Phase 8R Regression (RC-2): Genuine assertion failure combined with infrastructure error reports FAILED_VERIFICATION with all evidence."""
+    from app.verification.runner import TestExecutionOutcome
+
+    req = VerificationRunRequest(
+        finding_id=test_finding.id,
+        proposed_patch=VALID_SQLI_PATCH,
+        run_existing_tests=True,
+        run_regression_tests=True,
+        regression_test_code="def test_reg(): assert True\n",
+        timeout_seconds=30,
+    )
+
+    base_out = TestExecutionOutcome(
+        test_suite_name="project_tests",
+        status="error",
+        passed_count=0,
+        failed_count=0,
+        error_message="Baseline container probe failed",
+    )
+    patched_out = TestExecutionOutcome(
+        test_suite_name="project_tests",
+        status="failed",
+        passed_count=4,
+        failed_count=1,
+        error_message="AssertionError: expected parameterized query",
+    )
+    reg_out = TestExecutionOutcome(
+        test_suite_name="tests/test_security_regression.py",
+        status="passed",
+        passed_count=1,
+        failed_count=0,
+    )
+
+    with patch("app.verification.service.run_scanners_on_directory", side_effect=_mock_resolved_scanner_run()), \
+         patch("app.verification.service.run_pytest_in_workspace", side_effect=[base_out, patched_out, reg_out]):
+        result = execute_fix_verification(req, db=db_session)
+
+    assert result.status == VerificationStatus.FAILED_VERIFICATION
+    assert any("Baseline container probe failed" in err for err in result.execution_errors)
+    assert result.test_results["project_tests"]["status"] == "failed"
+    assert result.baseline_test_results["project_tests"]["status"] == "error"
+
+
+def test_valid_baseline_and_valid_postpatch_pass_yields_verified(db_session, test_finding):
+    """Phase 8R Regression (RC-2): Clean baseline pass + clean post-patch pass yields VERIFIED_AGAINST_DEFINED_CHECKS."""
+    from app.verification.runner import TestExecutionOutcome
+
+    req = VerificationRunRequest(
+        finding_id=test_finding.id,
+        proposed_patch=VALID_SQLI_PATCH,
+        run_existing_tests=True,
+        run_regression_tests=True,
+        regression_test_code="def test_reg(): assert True\n",
+        timeout_seconds=30,
+    )
+
+    passing_project = TestExecutionOutcome(test_suite_name="project_tests", status="passed", passed_count=5, failed_count=0)
+    passing_reg = TestExecutionOutcome(test_suite_name="tests/test_security_regression.py", status="passed", passed_count=1, failed_count=0)
+
+    with patch("app.verification.service.run_scanners_on_directory", side_effect=_mock_resolved_scanner_run()), \
+         patch("app.verification.service.run_pytest_in_workspace", side_effect=[passing_project, passing_project, passing_reg]):
+        result = execute_fix_verification(req, db=db_session)
+
+    assert result.status == VerificationStatus.VERIFIED_AGAINST_DEFINED_CHECKS
+    assert result.execution_errors == []
+

@@ -453,3 +453,182 @@ def test_worker_processes_pending_verifications_in_sandbox(db_session: Session):
         VerificationStatus.INCONCLUSIVE,
     )
     assert run.completed_at is not None
+
+
+def test_adversarial_patch_symlink_outside_workspace_rejected_with_symlink_reason(tmp_path: Path):
+    """Phase 8P Regression: Direct symlink pointing outside workspace must report symbolic link violation before resolve() escapes."""
+    outside_target = tmp_path / "host_secret.txt"
+    outside_target.write_text("SECRET_CONTENT", encoding="utf-8")
+
+    workspace_dir = tmp_path / "ws_sym_ext"
+    workspace_dir.mkdir()
+    symlink_target = workspace_dir / "link_config.txt"
+    symlink_target.write_text("SECRET_CONTENT", encoding="utf-8")
+
+    diff = (
+        "--- a/link_config.txt\n"
+        "+++ b/link_config.txt\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-SECRET_CONTENT\n"
+        "+TAMPERED\n"
+    )
+    parsed = parse_unified_diff(diff)
+    assert parsed.is_valid
+
+    orig_resolve = Path.resolve
+    orig_is_symlink = Path.is_symlink
+
+    def _fake_resolve(self: Path, *args, **kwargs) -> Path:
+        if self.name == "link_config.txt":
+            return outside_target
+        return orig_resolve(self, *args, **kwargs)
+
+    def _fake_is_symlink(self: Path) -> bool:
+        if self.name == "link_config.txt":
+            return True
+        return orig_is_symlink(self)
+
+    with patch.object(Path, "resolve", _fake_resolve), patch.object(Path, "is_symlink", _fake_is_symlink):
+        success, errors = apply_patch_to_workspace(workspace_root=workspace_dir, patch_result=parsed)
+        assert not success
+        assert any("symbolic link" in e.lower() for e in errors)
+
+
+def test_ensure_sandbox_readable_workspace_uses_scoped_acl_without_world_access(tmp_path: Path):
+    """Phase 8R Regression: POSIX workspace access uses owner-only chmod + UID-10002 POSIX ACL without world bits."""
+    import struct
+    from app.verification.workspace import ensure_sandbox_readable_workspace
+
+    ws = tmp_path / "ws_perms"
+    (ws / "tests").mkdir(parents=True)
+    test_file = ws / "tests" / "test_ok.py"
+    test_file.write_text("def test_ok(): assert True\n", encoding="utf-8")
+
+    chmod_calls = []
+    xattr_calls = []
+
+    def _fake_setxattr(path, attr, value, follow_symlinks=True):
+        assert follow_symlinks is False
+        assert attr == "system.posix_acl_access"
+        xattr_calls.append((Path(path), value))
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("app.verification.workspace.os.getuid", return_value=1001, create=True), \
+         patch("app.verification.workspace.os.setxattr", side_effect=_fake_setxattr, create=True), \
+         patch("app.verification.workspace.os.chmod", side_effect=lambda p, m: chmod_calls.append((Path(p), m))):
+        ensure_sandbox_readable_workspace(ws, sandbox_uid=10002)
+
+    assert len(chmod_calls) >= 3
+    for _, mode in chmod_calls:
+        assert (mode & 0o077) == 0, f"Base mode must not grant group or world permissions: {oct(mode)}"
+
+    assert len(xattr_calls) >= 3
+    for _, acl_blob in xattr_calls:
+        ver = struct.unpack_from("<I", acl_blob, 0)[0]
+        entries = [struct.unpack_from("<HHI", acl_blob, 4 + i * 8) for i in range((len(acl_blob) - 4) // 8)]
+        assert ver == 2
+        # Verify UID 10002 read/exec ACL present while group and other are 0 (no access)
+        entry_map = {(tag, eid): perm for tag, perm, eid in entries}
+        assert (0x02, 10002) in entry_map
+        assert entry_map[(0x04, 0xFFFFFFFF)] == 0
+        assert entry_map[(0x20, 0xFFFFFFFF)] == 0
+
+
+def test_ensure_sandbox_readable_workspace_owner_uid_match_stays_private(tmp_path: Path):
+    """Phase 8R Regression: When host UID matches sandbox UID 10002, private 0o700/0o600 suffices without ACL/world bits."""
+    from app.verification.workspace import ensure_sandbox_readable_workspace
+
+    ws = tmp_path / "ws_same_uid"
+    ws.mkdir()
+    (ws / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+    chmod_calls = []
+    with patch("platform.system", return_value="Linux"), \
+         patch("app.verification.workspace.os.getuid", return_value=10002, create=True), \
+         patch("app.verification.workspace.os.setxattr", side_effect=AssertionError("ACL not needed"), create=True), \
+         patch("app.verification.workspace.os.chmod", side_effect=lambda p, m: chmod_calls.append((Path(p), m))):
+        ensure_sandbox_readable_workspace(ws, sandbox_uid=10002)
+
+    assert len(chmod_calls) == 2
+    assert all((mode & 0o077) == 0 for _, mode in chmod_calls)
+
+
+def test_ensure_sandbox_readable_workspace_fails_closed_when_acl_unavailable(tmp_path: Path):
+    """Phase 8R Regression: Failed POSIX ACL setup must fail closed with PermissionError and never chmod world-readable."""
+    import errno
+    from app.verification.workspace import ensure_sandbox_readable_workspace
+
+    ws = tmp_path / "ws_acl_fail"
+    ws.mkdir()
+    (ws / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+    chmod_calls = []
+
+    def _raise_enotsup(*args, **kwargs):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("app.verification.workspace.os.getuid", return_value=1001, create=True), \
+         patch("app.verification.workspace.os.setxattr", side_effect=_raise_enotsup, create=True), \
+         patch("app.verification.workspace.os.chmod", side_effect=lambda p, m: chmod_calls.append((Path(p), m))):
+        with pytest.raises(PermissionError, match="Refusing insecure world-readable fallback"):
+            ensure_sandbox_readable_workspace(ws, sandbox_uid=10002)
+
+    # Only owner-only base mode (0o700) was set before ACL attempt; never 0o755/0o644/0o777.
+    for _, mode in chmod_calls:
+        assert (mode & 0o077) == 0
+
+
+def test_temp_root_boundary_rejects_temp_root_and_outside_paths(tmp_path: Path):
+    """Phase 8R Regression: Shared temporary root and outside paths are never passed to recursive permission modification."""
+    from app.verification.workspace import ensure_sandbox_readable_workspace, validate_strict_temp_workspace
+
+    temp_root = Path(tempfile.gettempdir()).resolve()
+
+    # 1. Temp root itself must be rejected
+    with patch("app.verification.workspace.os.chmod") as mock_chmod:
+        with pytest.raises(PermissionError, match="strict temporary-root descendant"):
+            validate_strict_temp_workspace(temp_root)
+        with pytest.raises(PermissionError, match="strict temporary-root descendant"):
+            ensure_sandbox_readable_workspace(temp_root, sandbox_uid=10002)
+        mock_chmod.assert_not_called()
+
+    # 2. Path outside temp root must be rejected
+    outside_dir = temp_root.parent
+    with pytest.raises(PermissionError, match="strict temporary-root descendant"):
+        validate_strict_temp_workspace(outside_dir)
+
+    # 3. Non-existent path must be rejected
+    missing_dir = tmp_path / "does_not_exist_ws"
+    with pytest.raises(FileNotFoundError):
+        validate_strict_temp_workspace(missing_dir)
+
+    # 4. Symlink workspace root must be rejected even if targeting a valid temp subdir
+    real_sub = tmp_path / "real_ws"
+    real_sub.mkdir()
+    link_ws = tmp_path / "sym_ws"
+    try:
+        link_ws.symlink_to(real_sub, target_is_directory=True)
+        with pytest.raises(PermissionError, match="symbolic link"):
+            validate_strict_temp_workspace(link_ws)
+    except (OSError, NotImplementedError):
+        with patch.object(Path, "is_symlink", side_effect=lambda self=None: True):
+            with pytest.raises(PermissionError, match="symbolic link"):
+                validate_strict_temp_workspace(real_sub)
+
+
+def test_patch_applier_posix_nofollow_rejects_phase2_symlink_swap(tmp_path: Path):
+    """Phase 8R Regression: POSIX Phase 2 dir_fd write helper aborts if target becomes a symlink before replace."""
+    from app.verification.patch_applier import _write_text_posix_nofollow
+
+    target_dir = tmp_path / "pkg"
+    target_dir.mkdir()
+
+    fake_stat_sym = MagicMock(st_mode=0o120777)  # stat.S_IFLNK
+    with patch("app.verification.patch_applier.os.O_NOFOLLOW", 0x20000, create=True), \
+         patch("app.verification.patch_applier.os.O_DIRECTORY", 0x10000, create=True), \
+         patch("app.verification.patch_applier.os.open", return_value=10, create=True), \
+         patch("app.verification.patch_applier.os.close", create=True), \
+         patch("app.verification.patch_applier.os.lstat", return_value=fake_stat_sym):
+        with pytest.raises(PermissionError, match="symbolic link"):
+            _write_text_posix_nofollow(tmp_path, ["pkg", "app.py"], "new content", create_parents=False)

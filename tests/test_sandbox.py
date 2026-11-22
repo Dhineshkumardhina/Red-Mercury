@@ -159,13 +159,29 @@ def test_runner_returns_error_outcome_on_fail_closed(tmp_path: Path):
         assert "Sandbox isolation unavailable" in outcome.error_message
 
 
-def test_production_strictly_forbids_host_fallback():
+def test_production_strictly_forbids_host_fallback(monkeypatch):
     """In production (APP_ENV=production), sandbox_allow_host_fallback must ALWAYS return False."""
+    for env_key in (
+        "APP_ENV",
+        "DEBUG",
+        "SECRET_KEY",
+        "DATABASE_URL",
+        "CORS_ORIGINS",
+        "SANDBOX_FAIL_CLOSED",
+        "SANDBOX_ALLOW_HOST_FALLBACK",
+        "ALLOW_PRIVATE_NETWORKS",
+        "CSRF_PROTECTION_ENABLED",
+        "AUTH_RATE_LIMITING_ENABLED",
+    ):
+        monkeypatch.delenv(env_key, raising=False)
+
     prod_settings = Settings(
+        _env_file=None,
         APP_ENV="production",
         DEBUG=False,
         SECRET_KEY="a" * 64,
         DATABASE_URL="postgresql://user:pass@localhost:5432/redmercury",
+        CORS_ORIGINS=["https://redmercury.xerova.com"],
         SANDBOX_ALLOW_HOST_FALLBACK=True,  # Even if misconfigured to True
     )
 
@@ -173,9 +189,13 @@ def test_production_strictly_forbids_host_fallback():
     assert prod_settings.sandbox_allow_host_fallback is False
 
 
-def test_development_allows_explicit_fallback():
+def test_development_allows_explicit_fallback(monkeypatch):
     """In development/test, sandbox_allow_host_fallback respects SANDBOX_ALLOW_HOST_FALLBACK setting."""
+    for env_key in ("APP_ENV", "SECRET_KEY", "DATABASE_URL", "SANDBOX_ALLOW_HOST_FALLBACK"):
+        monkeypatch.delenv(env_key, raising=False)
+
     dev_settings = Settings(
+        _env_file=None,
         APP_ENV="development",
         SECRET_KEY="dev-insecure-key-for-local-testing-only",
         DATABASE_URL="sqlite:///./test.db",
@@ -480,3 +500,150 @@ def test_live_docker_oom_and_fork_bomb_bounded(tmp_path: Path):
     )
     # The fork bomb attempt is safely contained without exhausting host process table
     assert outcome_fork.status in ("passed", "failed", "error")
+
+
+def test_test_target_backslash_traversal_blocked_cross_platform(tmp_path: Path):
+    """Phase 8P Regression: Backslash and absolute traversals are rejected as error on both POSIX and Windows."""
+    for target in ("..\\..\\windows\\win.ini", "..\\secret.py", "C:\\Windows\\win.ini", "/etc/passwd"):
+        outcome = run_pytest_in_workspace(workspace_dir=tmp_path, test_target=target)
+        assert outcome.status == "error", f"Traversal target {target!r} yielded {outcome.status} instead of error"
+        assert "traversal" in (outcome.error_message or "").lower()
+
+
+def test_container_command_configures_tmp_env_and_no_cacheprovider():
+    """Phase 8P Regression: Container command sets writable /tmp dirs and disables /workspace .pytest_cache writes."""
+    ws = Path("/tmp/mock_ws").resolve()
+    cfg = SandboxConfig(read_only_root=True, fail_closed=True)
+    cmd = build_container_run_command(
+        workspace_dir=ws,
+        container_name="rm-sbx-env-test",
+        cmd_args=["--", "tests/test_sample.py"],
+        config=cfg,
+    )
+    assert "HOME=/tmp" in cmd
+    assert "TMPDIR=/tmp" in cmd
+    assert "PYTEST_DEBUG_TEMPROOT=/tmp" in cmd
+    assert "no:cacheprovider" in cmd
+
+
+def test_execute_in_container_rejects_temp_root_without_chmod(tmp_path: Path):
+    """Phase 8R Regression: execute_in_container must reject temp_root itself without invoking permission helper or Docker."""
+    import tempfile
+    from app.verification.sandbox import execute_in_container
+
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    cfg = SandboxConfig(fail_closed=True)
+
+    with patch("app.verification.sandbox.ensure_sandbox_readable_workspace") as mock_perms, \
+         patch("subprocess.Popen") as mock_popen:
+        code, _, _, is_timeout, err_msg = execute_in_container(
+            workspace_dir=temp_root,
+            cmd_args=["--", "tests/test_ok.py"],
+            config=cfg,
+        )
+
+    assert code == -1
+    assert is_timeout is False
+    assert err_msg is not None and "temporary-root descendant" in err_msg
+    mock_perms.assert_not_called()
+    mock_popen.assert_not_called()
+
+
+def test_runner_rejects_all_malformed_test_targets_and_preserves_valid(tmp_path: Path):
+    """Phase 8R Regression: Empty, whitespace, null-byte, UNC, drive, absolute, and mixed traversal targets return error safely."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_valid.py").write_text("def test_pass(): assert True\n", encoding="utf-8")
+
+    malformed_targets = [
+        "",
+        "   \t\n",
+        "tests/\x00evil.py",
+        "/etc/passwd",
+        "\\Windows\\win.ini",
+        "C:\\Windows\\win.ini",
+        "C:secret.py",
+        "\\\\server\\share\\test.py",
+        "//server/share/test.py",
+        "../../etc/passwd",
+        "..\\..\\windows\\win.ini",
+        "tests/..\\../secret.py",
+        "tests\\../secret.py",
+    ]
+
+    ws_marker = str(tmp_path.resolve())
+    for bad_target in malformed_targets:
+        outcome = run_pytest_in_workspace(workspace_dir=tmp_path, test_target=bad_target)
+        assert outcome.status == "error", f"Malformed target {bad_target!r} produced {outcome.status} instead of error"
+        assert outcome.error_message
+        assert ws_marker not in outcome.error_message
+
+    cfg = SandboxConfig(fail_closed=True, allow_host_fallback=True)
+    with patch("app.verification.sandbox.check_docker_availability", return_value=(False, "Docker unavailable")):
+        valid_outcome = run_pytest_in_workspace(
+            workspace_dir=tmp_path,
+            test_target="tests/test_valid.py",
+            sandbox_config=cfg,
+        )
+    assert valid_outcome.status == "passed"
+    assert valid_outcome.passed_count == 1
+
+
+def test_execute_in_restricted_subprocess_enforces_strict_temp_workspace_boundary(tmp_path: Path):
+    """Phase 8T Regression (Finding B): Fallback runner enforces strict temp-root boundary without spawning pytest."""
+    import tempfile
+    from app.verification.sandbox import execute_in_restricted_subprocess
+
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    outside_dir = temp_root.parent
+    missing_dir = tmp_path / "missing_fallback_ws"
+    reg_file = tmp_path / "regular_file.py"
+    reg_file.write_text("x = 1\n", encoding="utf-8")
+
+    invalid_candidates = [temp_root, outside_dir, missing_dir, reg_file]
+    with patch("subprocess.Popen") as mock_popen:
+        for candidate in invalid_candidates:
+            code, _, _, is_timeout, err_msg = execute_in_restricted_subprocess(
+                workspace_dir=candidate,
+                cmd_args=["--", "tests/test_ok.py"],
+                timeout_seconds=5,
+            )
+            assert code == -1, f"Expected fail-closed for {candidate}"
+            assert is_timeout is False
+            assert err_msg and "Sandbox workspace access error:" in err_msg
+
+        # Symlink workspace root & symlink intermediate ancestor
+        real_ws = tmp_path / "real_fallback_ws"
+        (real_ws / "child").mkdir(parents=True)
+        link_ws = tmp_path / "link_fallback_ws"
+        link_anc = tmp_path / "link_ancestor_ws"
+        try:
+            link_ws.symlink_to(real_ws, target_is_directory=True)
+            link_anc.symlink_to(real_ws, target_is_directory=True)
+            sym_candidates = [link_ws, link_anc / "child"]
+        except (OSError, NotImplementedError):
+            sym_candidates = []
+
+        for sym_cand in sym_candidates:
+            code, _, _, _, err_msg = execute_in_restricted_subprocess(
+                workspace_dir=sym_cand,
+                cmd_args=["--", "tests/test_ok.py"],
+                timeout_seconds=5,
+            )
+            assert code == -1
+            assert err_msg and "Sandbox workspace access error:" in err_msg
+
+        mock_popen.assert_not_called()
+
+    # Valid strict temp workspace proceeds cleanly
+    valid_ws = tmp_path / "valid_fallback_ws"
+    valid_ws.mkdir()
+    (valid_ws / "test_pass.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+    code, stdout, _, is_timeout, err_msg = execute_in_restricted_subprocess(
+        workspace_dir=valid_ws,
+        cmd_args=["--", "test_pass.py"],
+        timeout_seconds=15,
+    )
+    assert code == 0
+    assert is_timeout is False
+    assert err_msg is None
+    assert "1 passed" in stdout

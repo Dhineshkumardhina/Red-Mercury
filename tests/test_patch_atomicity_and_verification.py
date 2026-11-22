@@ -350,3 +350,144 @@ def test_fix_verification_scanner_rescan_failure_inconclusive(db_session: Sessio
         response = execute_fix_verification(request=req, db=db_session, user_id="user-rescan-fail")
         assert response.status == VerificationStatus.INCONCLUSIVE
         assert any("error" in err.lower() for err in response.execution_errors)
+
+
+def test_patch_applier_preserves_executable_and_strips_unsafe_modes_posix(tmp_path: Path):
+    """Phase 8T Regression (Finding A): Preserves owner +x bit, keeps non-exec private, and strips group/world write bits."""
+    import os
+    import stat
+    from app.verification.patch_applier import (
+        _read_text_posix_nofollow,
+        _sanitize_preserved_mode,
+        _write_text_posix_nofollow,
+    )
+
+    assert _sanitize_preserved_mode(None) == 0o600
+    assert _sanitize_preserved_mode(0o644) == 0o600
+    assert _sanitize_preserved_mode(0o777) == 0o700
+    assert _sanitize_preserved_mode(0o4755) == 0o700
+
+    # Mocked POSIX descriptor-relative behavior (verified identically on Windows and real Linux)
+    fchmod_calls = []
+    fake_exec_stat = MagicMock(st_mode=stat.S_IFREG | 0o777)
+    fake_nonexec_stat = MagicMock(st_mode=stat.S_IFREG | 0o666)
+    open_modes = []
+
+    def _fake_open(path_arg, flags, mode=0o777, dir_fd=None):
+        if flags & 0x0200:  # O_CREAT mock marker
+            open_modes.append(mode)
+        return 20 if dir_fd is None else 21
+
+    with patch("app.verification.patch_applier.os.O_RDONLY", 0, create=True), \
+         patch("app.verification.patch_applier.os.O_WRONLY", 1, create=True), \
+         patch("app.verification.patch_applier.os.O_CREAT", 0x0200, create=True), \
+         patch("app.verification.patch_applier.os.O_EXCL", 0x0400, create=True), \
+         patch("app.verification.patch_applier.os.O_DIRECTORY", 0x10000, create=True), \
+         patch("app.verification.patch_applier.os.O_NOFOLLOW", 0x20000, create=True), \
+         patch("app.verification.patch_applier.os.open", side_effect=_fake_open, create=True), \
+         patch("app.verification.patch_applier.os.read", side_effect=[b"#!/bin/sh\necho v1\n", b""]), \
+         patch("app.verification.patch_applier.os.write", side_effect=lambda fd, buf: len(buf)), \
+         patch("app.verification.patch_applier.os.close", create=True), \
+         patch("app.verification.patch_applier.os.fstat", return_value=fake_exec_stat), \
+         patch("app.verification.patch_applier.os.lstat", return_value=fake_exec_stat), \
+         patch("app.verification.patch_applier.os.fchmod", side_effect=lambda fd, m: fchmod_calls.append(m), create=True), \
+         patch("app.verification.patch_applier.os.replace") as mock_replace:
+        content, _, captured_mode = _read_text_posix_nofollow(tmp_path, ["run.sh"])
+        assert "echo v1" in content
+        assert stat.S_IMODE(captured_mode) == 0o777
+        _write_text_posix_nofollow(tmp_path, ["run.sh"], "#!/bin/sh\necho v2\n", create_parents=False, file_mode=captured_mode)
+        # Temp file was opened private 0o600, then fchmod'd to 0o700 via open fd before atomic os.replace
+        assert open_modes == [0o600]
+        assert fchmod_calls == [0o700]
+        assert mock_replace.called
+
+    # Non-executable file remains 0o600 without fchmod to +x
+    fchmod_nonexec = []
+    with patch("app.verification.patch_applier.os.O_RDONLY", 0, create=True), \
+         patch("app.verification.patch_applier.os.O_WRONLY", 1, create=True), \
+         patch("app.verification.patch_applier.os.O_CREAT", 0x0200, create=True), \
+         patch("app.verification.patch_applier.os.O_EXCL", 0x0400, create=True), \
+         patch("app.verification.patch_applier.os.O_DIRECTORY", 0x10000, create=True), \
+         patch("app.verification.patch_applier.os.O_NOFOLLOW", 0x20000, create=True), \
+         patch("app.verification.patch_applier.os.open", side_effect=_fake_open, create=True), \
+         patch("app.verification.patch_applier.os.read", side_effect=[b"x = 1\n", b""]), \
+         patch("app.verification.patch_applier.os.write", side_effect=lambda fd, buf: len(buf)), \
+         patch("app.verification.patch_applier.os.close", create=True), \
+         patch("app.verification.patch_applier.os.fstat", return_value=fake_nonexec_stat), \
+         patch("app.verification.patch_applier.os.lstat", return_value=fake_nonexec_stat), \
+         patch("app.verification.patch_applier.os.fchmod", side_effect=lambda fd, m: fchmod_nonexec.append(m), create=True), \
+         patch("app.verification.patch_applier.os.replace"):
+        _, _, nonexec_mode = _read_text_posix_nofollow(tmp_path, ["app.py"])
+        _write_text_posix_nofollow(tmp_path, ["app.py"], "x = 2\n", create_parents=False, file_mode=nonexec_mode)
+        assert fchmod_nonexec == []
+
+
+def test_patch_applier_atomic_replace_failure_and_rollback_restore_permissions(disposable_workspace):
+    """Phase 8T Regression (Finding A): Failed atomic replace leaves no temp files; multi-file rollback restores content & mode."""
+    import os
+    import stat
+
+    script_file = disposable_workspace / "run.sh"
+    script_file.write_text("#!/bin/sh\necho old\n", encoding="utf-8")
+    os.chmod(script_file, 0o700)
+
+    diff = (
+        "diff --git a/run.sh b/run.sh\n"
+        "--- a/run.sh\n"
+        "+++ b/run.sh\n"
+        "@@ -1,2 +1,2 @@\n"
+        " #!/bin/sh\n"
+        "-echo old\n"
+        "+echo new\n"
+        "diff --git a/config.py b/config.py\n"
+        "--- a/config.py\n"
+        "+++ b/config.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-DEBUG = True\n"
+        "+DEBUG = False\n"
+    )
+    parsed = parse_unified_diff(diff)
+    assert parsed.is_valid
+
+    if os.name == "posix":
+        # 1. Real POSIX failure on file 2 replace must roll back file 1 content and 0o700 executable mode cleanly
+        real_replace = os.replace
+        calls = {"n": 0}
+
+        def _fail_second_replace(src, dst, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("Simulated atomic replace failure on config.py")
+            return real_replace(src, dst, **kwargs)
+
+        with patch("app.verification.patch_applier.os.replace", side_effect=_fail_second_replace):
+            success, errors = apply_patch_to_workspace(disposable_workspace, parsed)
+        assert not success
+        assert any("rolled back" in e.lower() for e in errors)
+        assert "echo old" in script_file.read_text(encoding="utf-8")
+        restored_mode = stat.S_IMODE(os.lstat(script_file).st_mode)
+        assert (restored_mode & stat.S_IXUSR) != 0
+        assert (restored_mode & 0o077) == 0
+        assert not [p for p in disposable_workspace.iterdir() if p.name.startswith(".rm_patch_")]
+    else:
+        # Simulated POSIX rollback under partial write failure on Windows verifying orig_mode is preserved to rollback
+        write_calls = []
+
+        def _fake_write(root, parts, content, create_parents, file_mode=None):
+            write_calls.append((tuple(parts), content, file_mode))
+            if parts[-1] == "config.py":
+                raise OSError("Simulated write error")
+
+        with patch("app.verification.patch_applier._use_posix_dirfd", return_value=True), \
+             patch("app.verification.patch_applier._read_text_posix_nofollow", side_effect=[
+                 ("#!/bin/sh\necho old\n", "h1", 0o750),
+                 ("DEBUG = True\nPORT = 8080\n", "h2", 0o640),
+             ]), \
+             patch("app.verification.patch_applier._write_text_posix_nofollow", side_effect=_fake_write):
+            success, errors = apply_patch_to_workspace(disposable_workspace, parsed)
+
+        assert not success
+        assert any("rolled back" in e.lower() for e in errors)
+        # First call: modify run.sh with 0o750; Second call: fails config.py; Third call: rollback run.sh with 0o750!
+        assert write_calls[0] == (("run.sh",), "#!/bin/sh\necho new\n", 0o750)
+        assert write_calls[-1] == (("run.sh",), "#!/bin/sh\necho old\n", 0o750)

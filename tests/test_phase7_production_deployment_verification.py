@@ -838,6 +838,10 @@ try {{
     finally:
         server.should_exit = True
         try:
+            server_thread.join(timeout=3.0)
+        except Exception:
+            pass
+        try:
             chrome_proc.terminate()
             chrome_proc.wait(timeout=5)
         except Exception:
