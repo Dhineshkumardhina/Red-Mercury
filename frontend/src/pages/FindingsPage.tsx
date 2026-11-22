@@ -69,7 +69,6 @@ export const FindingsPage: React.FC = () => {
 
   const loadData = async (refresh = false) => {
     if (refresh) {
-      api.setAuthToken(null);
       api.clearCache();
       setIsRefreshing(true);
     } else {
@@ -78,7 +77,6 @@ export const FindingsPage: React.FC = () => {
     setApiError(null);
 
     try {
-      await api.ensureAuthenticated(refresh);
       const [findingsRes, reposRes] = await Promise.all([
         api.getFindings(),
         api.getRepositories(true).catch(() => [] as ApiRepository[]),

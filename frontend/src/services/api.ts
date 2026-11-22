@@ -269,64 +269,98 @@ export class ApiError extends Error {
   }
 }
 
-let authToken: string | null = typeof window !== 'undefined'
-  ? localStorage.getItem('redmercury_token')
-  : null;
+/**
+ * Cookie-based authentication helpers (SEC-16).
+ *
+ * Authentication tokens are stored strictly in backend-issued HttpOnly cookies
+ * and are NEVER persisted to localStorage or exposed to ordinary frontend JS.
+ */
+const CSRF_COOKIE_NAME = 'rm_csrf_token';
 
-export function setAuthToken(token: string | null): void {
-  authToken = token;
-  if (typeof window !== 'undefined') {
-    if (token) {
-      localStorage.setItem('redmercury_token', token);
-    } else {
-      localStorage.removeItem('redmercury_token');
+export function getCsrfToken(): string | null {
+  if (typeof document === 'undefined' || !document.cookie) {
+    return null;
+  }
+  const cookies = document.cookie.split(';');
+  for (const raw of cookies) {
+    const [name, ...rest] = raw.trim().split('=');
+    if (name === CSRF_COOKIE_NAME) {
+      return decodeURIComponent(rest.join('='));
     }
   }
+  return null;
+}
+
+// Deprecated compatibility no-ops retained only so legacy callers/tests do not throw.
+// Tokens are never persisted to localStorage.
+export function setAuthToken(_token: string | null): void {
+  // Intentionally no-op: sessions are managed via HttpOnly cookies.
 }
 
 export function getAuthToken(): string | null {
-  if (!authToken && typeof window !== 'undefined') {
-    authToken = localStorage.getItem('redmercury_token');
-  }
-  return authToken;
+  return null;
 }
 
 export interface LoginResponse {
-  access_token: string;
-  token_type: string;
-  expires_in: number;
+  access_token?: string;
+  token_type?: string;
+  expires_in?: number;
   user: {
     id: string;
     email: string;
     account_status: string;
+    role?: string;
     created_at?: string;
   };
 }
 
 export async function loginWithCredentials(email: string, password: string): Promise<LoginResponse> {
-  const data = await request<LoginResponse>('/api/v1/auth/login', {
+  return await request<LoginResponse>('/api/v1/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   });
-  if (data?.access_token) {
-    setAuthToken(data.access_token);
-  }
-  return data;
 }
 
 export async function registerUser(email: string, password: string): Promise<LoginResponse> {
-  const data = await request<LoginResponse>('/api/v1/auth/register', {
+  return await request<LoginResponse>('/api/v1/auth/register', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   });
-  if (data?.access_token) {
-    setAuthToken(data.access_token);
-  }
-  return data;
 }
 
 export async function getCurrentUser(): Promise<LoginResponse['user']> {
   return await request<LoginResponse['user']>('/api/v1/auth/me');
+}
+
+// Single-flight refresh promise prevents duplicate concurrent /auth/refresh calls
+let refreshInFlight: Promise<boolean> | null = null;
+
+export async function refreshSession(): Promise<boolean> {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+  refreshInFlight = (async () => {
+    try {
+      const baseUrl = getApiBaseUrl();
+      const url = `${baseUrl}/api/v1/auth/refresh`;
+      const csrfToken = getCsrfToken();
+      const headers: Record<string, string> = {
+        Accept: 'application/json',
+        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+      };
+      const res = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+      });
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
 }
 
 export async function logoutUser(): Promise<void> {
@@ -337,78 +371,13 @@ export async function logoutUser(): Promise<void> {
   } catch {
     // Non-blocking cleanup
   } finally {
-    setAuthToken(null);
+    clearApiCache();
   }
 }
 
-
-let isAuthenticatingPromise: Promise<string | null> | null = null;
-
-export async function ensureAuthenticated(force = false): Promise<string | null> {
-  const current = getAuthToken();
-  if (current && !force) return current;
-  if (force) {
-    setAuthToken(null);
-  }
-
-  if (isAuthenticatingPromise) {
-    return isAuthenticatingPromise;
-  }
-
-  isAuthenticatingPromise = (async () => {
-    try {
-      // Only auto-authenticate with local dev seed credentials on localhost / Electron
-      if (typeof window !== 'undefined') {
-        const host = window.location.hostname;
-        const isLocal =
-          host === 'localhost' ||
-          host === '127.0.0.1' ||
-          window.location.protocol === 'file:' ||
-          !!(window as any).electronAPI?.isElectron;
-        if (!isLocal) {
-          return null;
-        }
-      }
-
-      const baseUrl = getApiBaseUrl();
-      const candidates = [
-        baseUrl ? (baseUrl + '/api/v1/auth/login') : '/api/v1/auth/login',
-        'http://127.0.0.1:8001/api/v1/auth/login',
-      ];
-      for (const url of candidates) {
-        try {
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({
-              email: 'dhineshkumardhina@gmail.com',
-              password: 'XerovaDevPass2026!',
-            }),
-          });
-          const ct = res.headers?.get?.('content-type') || '';
-          if (res.ok && !ct.includes('text/html')) {
-            const data = await res.json();
-            if (data?.access_token) {
-              setAuthToken(data.access_token);
-              if (typeof window !== 'undefined') {
-                window.dispatchEvent(new CustomEvent('redmercury:api-connected'));
-              }
-              return data.access_token;
-            }
-          }
-        } catch {
-          // Attempt next candidate
-        }
-      }
-    } catch (e) {
-      console.warn('Auto-authentication attempt failed:', e);
-    } finally {
-      isAuthenticatingPromise = null;
-    }
-    return null;
-  })();
-
-  return isAuthenticatingPromise;
+export async function ensureAuthenticated(): Promise<string | null> {
+  // Cookie-based sessions are validated automatically via HttpOnly cookies.
+  return null;
 }
 
 export function getApiBaseUrl(): string {
@@ -430,14 +399,21 @@ export function clearApiCache(): void {
   inFlightRequests.clear();
 }
 
-async function request<T>(endpoint: string, options: RequestInit = {}, retryCount = 0): Promise<T> {
-  if (!getAuthToken() && !endpoint.includes('/auth/') && !endpoint.includes('/health')) {
-    await ensureAuthenticated();
-  }
-  const token = getAuthToken();
+const AUTH_NO_REFRESH_PATHS = new Set([
+  '/api/v1/auth/login',
+  '/api/v1/auth/register',
+  '/api/v1/auth/refresh',
+  '/api/v1/auth/logout',
+]);
+
+async function request<T>(endpoint: string, options: RequestInit = {}, isRetry = false): Promise<T> {
+  const method = (options.method || 'GET').toUpperCase();
+  const isStateChanging = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+  const csrfToken = isStateChanging ? getCsrfToken() : null;
+
   const headers: Record<string, string> = {
     'Accept': 'application/json',
-    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
     ...(options.headers as Record<string, string> || {}),
   };
 
@@ -450,9 +426,9 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retryCoun
     ? endpoint
     : `${baseUrl}${endpoint}`;
 
-  const method = (options.method || 'GET').toUpperCase();
-  const isGet = method === 'GET' && !options.body;
-  const cacheKey = `${token || 'anon'}:${url}`;
+  const isAuthEndpoint = endpoint.startsWith('/api/v1/auth/');
+  const isGet = method === 'GET' && !options.body && !isAuthEndpoint;
+  const cacheKey = `cookie:${url}`;
 
   if (isGet) {
     const cached = microCache.get(cacheKey);
@@ -484,15 +460,17 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retryCoun
       try {
         res = await fetch(url, {
           ...options,
+          credentials: 'include',
           signal,
           headers,
         });
-      } catch (fetchErr: any) {
+      } catch {
         // Seamless direct fallback: if Vite proxy is delayed or refused, try direct port 8001
         if (baseUrl === '' && typeof window !== 'undefined' && !url.startsWith('http')) {
           try {
             res = await fetch(`http://127.0.0.1:8001${endpoint}`, {
               ...options,
+              credentials: 'include',
               signal,
               headers,
             });
@@ -527,15 +505,18 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retryCoun
 
       if (!res.ok) {
         if (res.status === 401) {
-          setAuthToken(null);
-          clearApiCache();
-          if (retryCount === 0 && !endpoint.includes('/auth/')) {
-            const refreshed = await ensureAuthenticated();
+          const cleanPath = endpoint.split('?')[0].replace(/\/+$/, '');
+          // Attempt single-flight refresh ONCE for non-auth endpoints
+          if (!isRetry && !AUTH_NO_REFRESH_PATHS.has(cleanPath)) {
+            const refreshed = await refreshSession();
             if (refreshed) {
-              return request<T>(endpoint, options, retryCount + 1);
+              clearApiCache();
+              return await request<T>(endpoint, options, true);
             }
           }
-          if (typeof window !== 'undefined') {
+
+          clearApiCache();
+          if (typeof window !== 'undefined' && !AUTH_NO_REFRESH_PATHS.has(cleanPath)) {
             window.dispatchEvent(new CustomEvent('redmercury:session-expired', { detail: { statusCode: 401 } }));
           }
         }

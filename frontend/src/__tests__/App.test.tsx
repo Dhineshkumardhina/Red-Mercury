@@ -250,7 +250,12 @@ describe('Red Mercury Frontend Routes & Components', () => {
   });
 
   it('redirects unauthenticated users from protected routes to "/login"', async () => {
-    setAuthToken(null);
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: false,
+      status: 401,
+      headers: { get: () => 'application/json' },
+      json: () => Promise.resolve({ error: { message: 'Unauthorized' } }),
+    })));
     render(
       <MemoryRouter initialEntries={['/dashboard']}>
         <App />

@@ -1,8 +1,17 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
-const { spawn, exec } = require('child_process');
+const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
+const {
+  parseBackendPort,
+  buildBackendArgs,
+  detectPythonExecutable,
+  resolveStaticAssetPath,
+  isSafeExternalUrl,
+  isTrustedOriginUrl,
+  terminateBackendProcess,
+} = require('./security.cjs');
 
 let mainWindow = null;
 let splashWindow = null;
@@ -10,10 +19,28 @@ let backendProcess = null;
 let uiServer = null;
 let uiServerPort = null;
 
-const BACKEND_PORT = process.env.PORT || 8001;
+const BACKEND_PORT = parseBackendPort(process.env.PORT, 8001);
 const BACKEND_HOST = '127.0.0.1';
 const HEALTH_URL = `http://${BACKEND_HOST}:${BACKEND_PORT}/api/v1/health`;
 const isDev = process.env.NODE_ENV === 'development';
+
+function getTrustedAppOrigins() {
+  const origins = [];
+  if (uiServerPort) {
+    origins.push(`http://127.0.0.1:${uiServerPort}`);
+  }
+  if (isDev && process.env.VITE_DEV_SERVER_URL) {
+    origins.push(process.env.VITE_DEV_SERVER_URL);
+  }
+  return origins;
+}
+
+function assertTrustedIpcSender(event) {
+  const senderUrl = event?.senderFrame?.url || '';
+  if (!isTrustedOriginUrl(senderUrl, getTrustedAppOrigins())) {
+    throw new Error('Unauthorized IPC sender origin');
+  }
+}
 
 // Ensure single instance lock
 const gotTheLock = app.requestSingleInstanceLock();
@@ -43,6 +70,8 @@ function createSplashScreen() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
     },
   });
 
@@ -187,24 +216,9 @@ async function startBackend() {
 
   const backendDir = path.join(rootDir, 'backend');
 
-  // Detect Python environment (virtualenv or system python)
-  let pythonCmd = 'python';
-  const venvPythonWin = path.join(rootDir, '.venv', 'Scripts', 'python.exe');
-  const envPythonWin = path.join(rootDir, 'venv', 'Scripts', 'python.exe');
-
-  if (fs.existsSync(venvPythonWin)) {
-    pythonCmd = venvPythonWin;
-  } else if (fs.existsSync(envPythonWin)) {
-    pythonCmd = envPythonWin;
-  }
-
-  const args = [
-    '-m', 'uvicorn',
-    'app.main:app',
-    '--app-dir', backendDir,
-    '--host', BACKEND_HOST,
-    '--port', String(BACKEND_PORT),
-  ];
+  // Detect Python environment (Windows & POSIX virtualenv or system python)
+  const pythonCmd = detectPythonExecutable(rootDir, process.platform);
+  const args = buildBackendArgs(backendDir, BACKEND_HOST, BACKEND_PORT);
 
   try {
     backendProcess = spawn(pythonCmd, args, {
@@ -214,7 +228,7 @@ async function startBackend() {
         PYTHONUNBUFFERED: '1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
+      shell: false,
     });
 
     backendProcess.stdout.on('data', (data) => {
@@ -293,26 +307,34 @@ function startStaticUiServer(distPath) {
         return;
       }
 
-      // Serve static assets with SPA fallback
-      let reqPath = decodeURI(req.url.split('?')[0]);
-      if (reqPath === '/') reqPath = '/index.html';
-      let filePath = path.join(distPath, reqPath);
-
-      if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-        filePath = path.join(distPath, 'index.html');
+      // Serve static assets with strict path containment & SPA fallback
+      const resolved = resolveStaticAssetPath(distPath, req.url || '/');
+      if (!resolved.ok) {
+        res.writeHead(resolved.status, {
+          'Content-Type': 'text/plain; charset=UTF-8',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        res.end(resolved.error);
+        return;
       }
 
+      const filePath = resolved.filePath;
       const ext = path.extname(filePath).toLowerCase();
       const contentType = mimeTypes[ext] || 'application/octet-stream';
 
       fs.readFile(filePath, (err, content) => {
         if (err) {
-          res.writeHead(500);
+          res.writeHead(500, { 'Content-Type': 'text/plain; charset=UTF-8', 'X-Content-Type-Options': 'nosniff' });
           res.end('Error loading application assets');
         } else {
           res.writeHead(200, {
             'Content-Type': contentType,
             'Cache-Control': 'no-cache',
+            'X-Content-Type-Options': 'nosniff',
+            'X-Frame-Options': 'DENY',
+            'Referrer-Policy': 'no-referrer',
+            'Content-Security-Policy':
+              `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://${BACKEND_HOST}:${BACKEND_PORT}; object-src 'none'; base-uri 'self'; frame-ancestors 'none';`,
           });
           res.end(content);
         }
@@ -343,7 +365,8 @@ async function createMainWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
+      webSecurity: true,
     },
   });
 
@@ -377,9 +400,17 @@ async function createMainWindow() {
     mainWindow.focus();
   });
 
+  // Restrict in-window navigation strictly to trusted local application origins
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (!isTrustedOriginUrl(navigationUrl, getTrustedAppOrigins())) {
+      console.warn(`[Electron] Blocked unauthorized navigation to: ${navigationUrl}`);
+      event.preventDefault();
+    }
+  });
+
   // Intercept external links and open safely in external system browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http:') || url.startsWith('https:')) {
+    if (isSafeExternalUrl(url)) {
       shell.openExternal(url);
     }
     return { action: 'deny' };
@@ -391,18 +422,12 @@ async function createMainWindow() {
 }
 
 /**
- * Gracefully kill child backend process tree on Windows/Unix
+ * Gracefully and synchronously kill child backend process tree on Windows/Unix
  */
 function terminateBackend() {
   if (backendProcess && backendProcess.pid) {
     console.log(`[Electron] Terminating backend process PID ${backendProcess.pid}...`);
-    if (process.platform === 'win32') {
-      exec(`taskkill /pid ${backendProcess.pid} /T /F`, (err) => {
-        if (err) console.warn('[Electron] taskkill error:', err.message);
-      });
-    } else {
-      backendProcess.kill('SIGTERM');
-    }
+    terminateBackendProcess(backendProcess, { platform: process.platform });
     backendProcess = null;
   }
   if (uiServer) {
@@ -413,8 +438,9 @@ function terminateBackend() {
   }
 }
 
-// IPC Handlers
-ipcMain.handle('dialog:openDirectory', async () => {
+// IPC Handlers (all validate trusted sender origin)
+ipcMain.handle('dialog:openDirectory', async (event) => {
+  assertTrustedIpcSender(event);
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory'],
     title: 'Select Repository or Project Directory for Security Scan',
@@ -425,7 +451,8 @@ ipcMain.handle('dialog:openDirectory', async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('app:getInfo', () => {
+ipcMain.handle('app:getInfo', (event) => {
+  assertTrustedIpcSender(event);
   return {
     version: app.getVersion(),
     platform: process.platform,
@@ -435,13 +462,15 @@ ipcMain.handle('app:getInfo', () => {
   };
 });
 
-ipcMain.handle('app:checkBackend', async () => {
+ipcMain.handle('app:checkBackend', async (event) => {
+  assertTrustedIpcSender(event);
   return await checkBackendHealth();
 });
 
 ipcMain.handle('shell:openExternal', async (event, url) => {
-  if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
-    await shell.openExternal(url);
+  assertTrustedIpcSender(event);
+  if (isSafeExternalUrl(url)) {
+    await shell.openExternal(url.trim());
     return true;
   }
   return false;

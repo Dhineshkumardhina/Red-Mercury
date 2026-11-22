@@ -127,19 +127,19 @@ export const SettingsPage: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
             <div>
               <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">Full Name</span>
-              <span className="font-semibold text-slate-900 text-sm">{user?.fullName || 'Dhinesh Kumar'}</span>
+              <span className="font-semibold text-slate-900 text-sm">{user?.fullName || 'Authenticated User'}</span>
             </div>
 
             <div>
               <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">Corporate Email</span>
-              <span className="font-mono text-slate-700">{user?.email || 'dhineshkumardhina@gmail.com'}</span>
+              <span className="font-mono text-slate-700">{user?.email || 'Not signed in'}</span>
             </div>
 
             <div>
               <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">Role &amp; Permissions</span>
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 font-semibold border border-blue-200 text-xs">
                 <span className="material-symbols-outlined text-xs">verified_user</span>
-                {user?.role || 'SecOps Lead'}
+                {user?.role || 'analyst'}
               </span>
             </div>
           </div>

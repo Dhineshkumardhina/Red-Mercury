@@ -36,6 +36,6 @@
     "wrangler": "^4.166.0"
   },
   "overrides": {
-    "tinypool": ">=2.1.2"
+    "tinypool": "2.2.0"
   }
 }

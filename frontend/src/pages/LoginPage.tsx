@@ -4,30 +4,12 @@ import { useAuth } from '../context/AuthContext';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
-  const { login, loginAsTester } = useAuth();
+  const { login } = useAuth();
 
-  const [email, setEmail] = useState('dhineshkumardhina@gmail.com');
-  const [password, setPassword] = useState('XerovaDevPass2026!');
-  const [role, setRole] = useState<'SecOps Lead' | 'Security Analyst' | 'Staff Engineer'>('SecOps Lead');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  const handleInstantLaunch = async () => {
-    setErrorMessage(null);
-    setIsLoading(true);
-    try {
-      if (loginAsTester) {
-        await loginAsTester();
-      } else {
-        await login('dhineshkumardhina@gmail.com', 'XerovaDevPass2026!', 'SecOps Lead');
-      }
-      navigate('/dashboard');
-    } catch {
-      setErrorMessage('Could not launch testing session. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,7 +17,7 @@ export const LoginPage: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const res = await login(email, password, role);
+      const res = await login(email, password);
       if (res.success) {
         navigate('/dashboard');
       } else {
@@ -62,40 +44,15 @@ export const LoginPage: React.FC = () => {
           </span>
         </Link>
         <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-          Security Testing Console
+          Security Console Sign-In
         </h2>
         <p className="mt-1 text-xs text-slate-500 max-w-sm mx-auto">
-          Instant access to code verification, vulnerability analysis, and pull request testing.
+          Sign in with your authorized workspace credentials to access code verification and vulnerability analysis.
         </p>
       </div>
 
       <div className="mt-6 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="bg-white py-6 px-6 sm:px-8 shadow-xs rounded-xl border border-slate-200">
-
-          {/* 1-Click Instant Testing Access */}
-          <div className="mb-5">
-            <button
-              type="button"
-              onClick={handleInstantLaunch}
-              disabled={isLoading}
-              className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-lg shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-            >
-              <span>1-Click Launch Testing Environment</span>
-            </button>
-            <p className="text-[11px] text-center text-emerald-800 font-medium mt-1.5 flex items-center justify-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
-              <span>Pre-loaded with sample repositories &amp; verified test findings</span>
-            </p>
-          </div>
-
-          <div className="relative flex py-2 items-center mb-4">
-            <div className="flex-grow border-t border-slate-200"></div>
-            <span className="flex-shrink mx-3 text-slate-400 text-[10px] uppercase tracking-wider font-semibold">
-              Or sign in with custom account
-            </span>
-            <div className="flex-grow border-t border-slate-200"></div>
-          </div>
-
           {errorMessage && (
             <div className="mb-4 p-3 rounded-md bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
               <span>{errorMessage}</span>
@@ -112,28 +69,13 @@ export const LoginPage: React.FC = () => {
                   id="email"
                   type="email"
                   required
+                  autoComplete="email"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
                   className="w-full px-3 py-2 bg-white border border-slate-200 rounded-md text-xs text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:border-slate-400 transition-all font-mono"
                   placeholder="user@company.com"
                 />
               </div>
-            </div>
-
-            <div>
-              <label htmlFor="role" className="block text-xs font-medium text-slate-700">
-                Authorized Role
-              </label>
-              <select
-                id="role"
-                value={role}
-                onChange={e => setRole(e.target.value as any)}
-                className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-md text-xs text-slate-900 focus:outline-hidden focus:border-slate-400 transition-all"
-              >
-                <option value="SecOps Lead">SecOps Lead (Approval &amp; Auto-Merge)</option>
-                <option value="Security Analyst">Security Analyst (Triage &amp; Verify)</option>
-                <option value="Staff Engineer">Staff Engineer (View &amp; Sandbox Inspect)</option>
-              </select>
             </div>
 
             <div>
@@ -144,6 +86,7 @@ export const LoginPage: React.FC = () => {
                 id="pass"
                 type="password"
                 required
+                autoComplete="current-password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-md text-xs text-slate-900 placeholder:text-slate-400 focus:outline-hidden focus:border-slate-400 transition-all font-mono"
