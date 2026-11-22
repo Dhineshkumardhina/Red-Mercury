@@ -12,7 +12,7 @@ class User(Base, TimestampMixin):
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     account_status = Column(String(32), default="active", nullable=False, index=True)  # active, suspended, pending
-    role = Column(String(32), default="admin", nullable=False, index=True)  # admin, maintainer, analyst, viewer, auditor
+    role = Column(String(32), default="analyst", nullable=False, index=True)  # admin, maintainer, analyst, viewer, auditor
 
     # Relationships
     repositories = relationship("Repository", back_populates="owner", cascade="all, delete-orphan")

@@ -12,6 +12,7 @@ from .evidence import SecurityEvidence
 from .github import GitHubIntegration, PullRequestScan, RepositoryGitHubLink, WebhookDelivery
 from .validation import FindingValidation
 from .token import RevokedToken
+from .job import DurableJob, JobOutboxEvent, ActiveJobSlot
 
 __all__ = [
     "Base",
@@ -32,4 +33,7 @@ __all__ = [
     "WebhookDelivery",
     "FindingValidation",
     "RevokedToken",
+    "DurableJob",
+    "JobOutboxEvent",
+    "ActiveJobSlot",
 ]
