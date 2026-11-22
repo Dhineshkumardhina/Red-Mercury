@@ -48,38 +48,41 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        is_pg = connection.dialect.name == "postgresql"
-        if is_pg:
-            # Serialize concurrent multi-replica startup migrations via PostgreSQL advisory lock
-            connection.execute(text("SELECT pg_advisory_lock(72839104)"))
-            connection.commit()
-        try:
+    try:
+        with connectable.connect() as connection:
+            is_pg = connection.dialect.name == "postgresql"
             if is_pg:
-                connection.execute(text(
-                    "CREATE TABLE IF NOT EXISTS alembic_version ("
-                    "version_num VARCHAR(128) NOT NULL, "
-                    "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
-                ))
-                connection.execute(text(
-                    "ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)"
-                ))
+                # Serialize concurrent multi-replica startup migrations via PostgreSQL advisory lock
+                connection.execute(text("SELECT pg_advisory_lock(72839104)"))
                 connection.commit()
-
-            context.configure(
-                connection=connection,
-                target_metadata=target_metadata,
-            )
-
-            with context.begin_transaction():
-                context.run_migrations()
-        finally:
-            if is_pg:
-                try:
-                    connection.execute(text("SELECT pg_advisory_unlock(72839104)"))
+            try:
+                if is_pg:
+                    connection.execute(text(
+                        "CREATE TABLE IF NOT EXISTS alembic_version ("
+                        "version_num VARCHAR(128) NOT NULL, "
+                        "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+                    ))
+                    connection.execute(text(
+                        "ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)"
+                    ))
                     connection.commit()
-                except Exception:
-                    pass
+
+                context.configure(
+                    connection=connection,
+                    target_metadata=target_metadata,
+                )
+
+                with context.begin_transaction():
+                    context.run_migrations()
+            finally:
+                if is_pg:
+                    try:
+                        connection.execute(text("SELECT pg_advisory_unlock(72839104)"))
+                        connection.commit()
+                    except Exception:
+                        pass
+    finally:
+        connectable.dispose()
 
 
 if context.is_offline_mode():

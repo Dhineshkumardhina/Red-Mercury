@@ -1623,6 +1623,19 @@ def _get_local_hostname() -> str:
         return "unknown"
 
 
+def _read_proc_stat_fields(pid: int) -> Optional[List[str]]:
+    """Parse post-comm fields from Linux /proc/<pid>/stat safely (index 0=state, index 19=starttime)."""
+    stat_path = Path(f"/proc/{int(pid)}/stat")
+    if not stat_path.exists():
+        return None
+    raw = stat_path.read_text(encoding="utf-8", errors="ignore")
+    rparen = raw.rfind(")")
+    if rparen == -1:
+        return None
+    fields = raw[rparen + 2:].split()
+    return fields if fields else None
+
+
 def _get_pid_start_time(pid: int) -> Optional[str]:
     """Return an OS-level process creation-time fingerprint to prevent PID-reuse misidentification."""
     if not pid or int(pid) <= 0:
@@ -1655,16 +1668,9 @@ def _get_pid_start_time(pid: int) -> Optional[str]:
             finally:
                 kernel32.CloseHandle(handle)
         else:
-            stat_path = Path(f"/proc/{int(pid)}/stat")
-            if not stat_path.exists():
-                return None
-            raw = stat_path.read_text(encoding="utf-8", errors="ignore")
-            rparen = raw.rfind(")")
-            if rparen == -1:
-                return None
-            fields = raw[rparen + 2:].split()
+            fields = _read_proc_stat_fields(int(pid))
             # Field 22 (starttime) is index 19 after comm
-            if len(fields) > 19:
+            if fields and len(fields) > 19:
                 return str(fields[19])
             return None
     except Exception:
@@ -1768,6 +1774,10 @@ def _is_pid_running(pid: int) -> bool:
             return f'"{int(pid)}"' in out
         else:
             os.kill(int(pid), 0)
+            # On POSIX, direct unreaped children remain briefly as 'Z'/'X' (zombie/dead) where kill(0) succeeds.
+            fields = _read_proc_stat_fields(int(pid))
+            if fields and fields[0] in ("Z", "X", "x"):
+                return False
             return True
     except ProcessLookupError:
         return False
@@ -1800,6 +1810,9 @@ def _kill_pid_tree_safely(pid: int) -> None:
                     os.kill(int(pid), signal.SIGKILL)
             except Exception:
                 os.kill(int(pid), signal.SIGKILL)
+            deadline = time.monotonic() + 1.0
+            while _is_pid_running(int(pid)) and time.monotonic() < deadline:
+                time.sleep(0.02)
     except Exception:
         pass
 
