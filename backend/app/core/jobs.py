@@ -1268,7 +1268,10 @@ class JobExecutionTracker:
             else:
                 try:
                     pgid = os.getpgid(pid)
-                    os.killpg(pgid, signal.SIGKILL)
+                    if pgid != os.getpgid(os.getpid()):
+                        os.killpg(pgid, signal.SIGKILL)
+                    else:
+                        proc.kill()
                 except Exception:
                     proc.kill()
             proc.kill()

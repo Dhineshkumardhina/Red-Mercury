@@ -133,10 +133,13 @@ def terminate_process_tree(
                     check=False,
                 )
             else:
-                # POSIX process group kill
+                # POSIX process group kill (only when child is in its own session/pgid)
                 try:
                     pgid = os.getpgid(pid)
-                    os.killpg(pgid, signal.SIGKILL)
+                    if pgid != os.getpgid(os.getpid()):
+                        os.killpg(pgid, signal.SIGKILL)
+                    else:
+                        proc.kill()
                 except Exception:
                     proc.kill()
             proc.kill()
@@ -231,13 +234,15 @@ def execute_in_container(
     try:
         if tracker is not None and tracker.should_abort():
             return -1, "", "", False, "Sandbox execution cancelled before container launch."
-        proc = subprocess.Popen(
-            docker_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=sanitized_env,
-        )
+        popen_kwargs: Dict[str, Any] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "env": sanitized_env,
+        }
+        if platform.system() != "Windows":
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(docker_cmd, **popen_kwargs)
         if tracker is not None:
             tracker.register_process(proc)
         stdout, stderr = proc.communicate(timeout=config.timeout_seconds)
@@ -279,19 +284,19 @@ def execute_in_restricted_subprocess(
     try:
         if tracker is not None and tracker.should_abort():
             return -1, "", "", False, "Restricted runner execution cancelled before spawn."
-        creationflags = 0
+        popen_kwargs: Dict[str, Any] = {
+            "cwd": str(workspace_dir),
+            "env": env,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+        }
         if platform.system() == "Windows":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+        else:
+            popen_kwargs["start_new_session"] = True
 
-        proc = subprocess.Popen(
-            full_cmd,
-            cwd=str(workspace_dir),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            creationflags=creationflags,
-        )
+        proc = subprocess.Popen(full_cmd, **popen_kwargs)
         if tracker is not None:
             tracker.register_process(proc)
         stdout, stderr = proc.communicate(timeout=timeout_seconds)

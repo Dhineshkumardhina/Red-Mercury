@@ -69,6 +69,10 @@ jobs:
         run: |
           docker build -f Dockerfile.worker -t redmercury-worker:latest .
 
+      - name: "Build Frontend Container Image for Live Nginx Security Header Tests"
+        run: |
+          docker build -f Dockerfile.frontend -t redmercury-frontend:test .
+
       - name: "Verify Python Syntax and Compilation"
         run: |
           python -m compileall backend/app -q
@@ -87,7 +91,8 @@ jobs:
           SANDBOX_ALLOW_HOST_FALLBACK: "true"
         run: |
           mkdir -p .redmercury_artifacts
-          python -m pytest tests/ --tb=short --junitxml=.redmercury_artifacts/pytest-results.xml
+          set -o pipefail
+          python -m pytest tests/ -v --tb=short --durations=25 --timeout=120 --junitxml=.redmercury_artifacts/pytest-results.xml 2>&1 | tee .redmercury_artifacts/pytest-output.log
 
       - name: "Upload Backend Test Results Artifact"
         if: always()
@@ -95,6 +100,15 @@ jobs:
         with:
           name: backend-pytest-results
           path: .redmercury_artifacts/pytest-results.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: "Upload Backend Diagnostic Log Artifact"
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-pytest-log
+          path: .redmercury_artifacts/pytest-output.log
           if-no-files-found: warn
           retention-days: 14
 
