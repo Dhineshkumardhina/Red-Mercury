@@ -14,11 +14,14 @@ from ....core.config import settings
 from ....core.errors import SecurityPolicyViolationError, ValidationError
 from ....core.ingestion import (
     clone_git_repository,
+    copy_local_directory_safely,
     get_repository_workspace,
+    resolve_required_git_egress_proxy,
     validate_and_extract_zip,
     validate_git_url,
     validate_local_ingest_path,
 )
+from ....core.workspace_cleanup import safe_delete_workspace_dir
 from ....db.session import get_db
 from ....models.repository import Repository
 from ....models.user import User
@@ -70,12 +73,19 @@ def create_repository(
     if existing:
         raise ValidationError(f"Repository '{repo_in.name}' is already registered under your account.")
 
+    validated_git_url = None
+    if repo_in.git_url and repo_in.git_url.strip():
+        validated_git_url = validate_git_url(
+            repo_in.git_url,
+            allow_private=settings.ALLOW_PRIVATE_NETWORKS,
+        )
+
     repo = Repository(
         owner_id=current_user.id,
         name=repo_in.name,
         source_type=repo_in.source_type,
         language_metadata=repo_in.language_metadata,
-        git_url=repo_in.git_url,
+        git_url=validated_git_url,
         default_branch=repo_in.default_branch,
         health_score=repo_in.health_score,
         critical_count=repo_in.critical_count,
@@ -86,8 +96,7 @@ def create_repository(
         ingestion_status="completed",
     )
     db.add(repo)
-    db.commit()
-    db.refresh(repo)
+    db.flush()
 
     record_audit_event(
         db=db,
@@ -96,7 +105,11 @@ def create_repository(
         resource_identifier=repo.id,
         actor_id=current_user.id,
         metadata={"repo_name": repo.name},
+        commit=False,
+        raise_on_error=True,
     )
+    db.commit()
+    db.refresh(repo)
 
     return repo
 
@@ -187,9 +200,6 @@ async def ingest_zip_archive(
         repo.total_size_bytes = total_bytes
         repo.language_metadata = language_metadata
         repo.workspace_path = str(workspace_dir)
-        db.commit()
-        db.refresh(repo)
-
         record_audit_event(
             db=db,
             action="REPOSITORY_INGESTION_ZIP_SUCCESS",
@@ -202,7 +212,11 @@ async def ingest_zip_archive(
                 "total_bytes": total_bytes,
                 "languages": language_metadata,
             },
+            commit=False,
+            raise_on_error=True,
         )
+        db.commit()
+        db.refresh(repo)
 
         return repo
 
@@ -252,6 +266,9 @@ def ingest_git_repository(
     - Git hooks disabled during clone
     - Execution timeout (60s)
     """
+    # 0. Enforce fail-closed Git egress proxy requirement in strict environments before DB record creation
+    resolve_required_git_egress_proxy()
+
     # 1. Strictly validate and sanitize URL against SSRF
     sanitized_url = validate_git_url(payload.git_url, allow_private=settings.ALLOW_PRIVATE_NETWORKS)
 
@@ -293,6 +310,7 @@ def ingest_git_repository(
             dest_dir=workspace_dir,
             branch=payload.default_branch or "main",
             timeout=settings.GIT_CLONE_TIMEOUT_SECONDS,
+            allow_private=settings.ALLOW_PRIVATE_NETWORKS,
         )
 
         repo.ingestion_status = "completed"
@@ -301,9 +319,6 @@ def ingest_git_repository(
         repo.total_size_bytes = total_bytes
         repo.language_metadata = language_metadata
         repo.workspace_path = str(workspace_dir)
-        db.commit()
-        db.refresh(repo)
-
         record_audit_event(
             db=db,
             action="REPOSITORY_INGESTION_GIT_SUCCESS",
@@ -317,7 +332,11 @@ def ingest_git_repository(
                 "total_bytes": total_bytes,
                 "languages": language_metadata,
             },
+            commit=False,
+            raise_on_error=True,
         )
+        db.commit()
+        db.refresh(repo)
 
         return repo
 
@@ -327,6 +346,80 @@ def ingest_git_repository(
         repo.ingestion_error = str(exc)[:1000]
         db.commit()
 
+        record_audit_event(
+            db=db,
+            action="REPOSITORY_INGESTION_GIT_FAILED",
+            resource_type="repository",
+            resource_identifier=repo.id,
+            actor_id=current_user.id,
+            metadata={"git_url": sanitized_url, "error": str(exc)},
+        )
+        raise exc
+
+
+@router.post(
+    "/{repo_id}/clone",
+    response_model=RepositoryRead,
+    status_code=status.HTTP_200_OK,
+    summary="Clone or refresh a registered public Git repository into its isolated workspace with SSRF defense",
+)
+def clone_registered_git_repository(
+    repo_id: str,
+    current_user: User = Depends(require_mutating_role),
+    db: Session = Depends(get_db),
+) -> Repository:
+    """Clones an existing tenant-owned repository's git_url safely with fail-closed SSRF and egress proxy checks."""
+    repo = verify_repository_ownership(repo_id=repo_id, current_user=current_user, db=db)
+    if not repo.git_url:
+        raise ValidationError("Repository does not have a configured git_url to clone.")
+
+    # 0. Enforce fail-closed Git egress proxy requirement in strict environments before DNS or subprocess execution
+    resolve_required_git_egress_proxy()
+
+    # 1. Re-validate git_url against SSRF
+    sanitized_url = validate_git_url(repo.git_url, allow_private=settings.ALLOW_PRIVATE_NETWORKS)
+    repo.ingestion_status = "in_progress"
+    db.commit()
+
+    try:
+        workspace_dir = get_repository_workspace(current_user.id, repo.id)
+        file_count, total_bytes, language_metadata, actual_branch = clone_git_repository(
+            git_url=sanitized_url,
+            dest_dir=workspace_dir,
+            branch=repo.default_branch or "main",
+            timeout=settings.GIT_CLONE_TIMEOUT_SECONDS,
+            allow_private=settings.ALLOW_PRIVATE_NETWORKS,
+        )
+        repo.ingestion_status = "completed"
+        repo.default_branch = actual_branch
+        repo.file_count = file_count
+        repo.total_size_bytes = total_bytes
+        repo.language_metadata = language_metadata
+        repo.workspace_path = str(workspace_dir)
+        record_audit_event(
+            db=db,
+            action="REPOSITORY_INGESTION_GIT_SUCCESS",
+            resource_type="repository",
+            resource_identifier=repo.id,
+            actor_id=current_user.id,
+            metadata={
+                "repo_name": repo.name,
+                "git_url": sanitized_url,
+                "file_count": file_count,
+                "total_bytes": total_bytes,
+                "languages": language_metadata,
+            },
+            commit=False,
+            raise_on_error=True,
+        )
+        db.commit()
+        db.refresh(repo)
+        return repo
+    except Exception as exc:
+        db.rollback()
+        repo.ingestion_status = "failed"
+        repo.ingestion_error = str(exc)[:1000]
+        db.commit()
         record_audit_event(
             db=db,
             action="REPOSITORY_INGESTION_GIT_FAILED",
@@ -375,39 +468,10 @@ def ingest_local_directory(
 
     try:
         workspace_dir = get_repository_workspace(current_user.id, repo.id)
-        if workspace_dir.exists():
-            shutil.rmtree(workspace_dir)
-
-        # Ignore unnecessary heavyweight build artifacts / caches
-        def ignore_patterns(folder, contents):
-            return [c for c in contents if c in ('.git', 'node_modules', '__pycache__', '.pytest_cache', 'venv', '.venv')]
-
-        shutil.copytree(local_dir, workspace_dir, ignore=ignore_patterns, symlinks=False)
-
-        # Count files and detect languages
-        file_count = 0
-        total_bytes = 0
-        ext_counts: dict = {}
-        for root, _, files in os.walk(workspace_dir):
-            for f in files:
-                file_count += 1
-                fp = Path(root) / f
-                try:
-                    total_bytes += fp.stat().st_size
-                except OSError:
-                    pass
-                ext = fp.suffix.lower()
-                if ext:
-                    ext_counts[ext] = ext_counts.get(ext, 0) + 1
-
-        lang_map = {
-            ".py": "Python", ".ts": "TypeScript", ".tsx": "TypeScript",
-            ".js": "JavaScript", ".jsx": "JavaScript", ".go": "Go",
-            ".rs": "Rust", ".java": "Java", ".c": "C", ".cpp": "C++",
-            ".php": "PHP", ".rb": "Ruby", ".cs": "C#",
-        }
-        detected = sorted(list(set(lang_map[ext] for ext in ext_counts if ext in lang_map)))
-        language_metadata = ", ".join(detected) if detected else "Generic"
+        file_count, total_bytes, language_metadata = copy_local_directory_safely(
+            local_dir=local_dir,
+            workspace_dir=workspace_dir,
+        )
 
         repo.ingestion_status = "completed"
         repo.file_count = file_count
@@ -487,15 +551,18 @@ def delete_repository(
     workspace = repo.workspace_path
     repo_name = repo.name
 
-    # 1. Purge workspace from filesystem
-    if workspace and os.path.exists(workspace):
-        shutil.rmtree(workspace, ignore_errors=True)
+    # 1. Safely validate confinement, tenant ownership, active-scan locks, and purge workspace
+    if workspace:
+        safe_delete_workspace_dir(
+            workspace_path=workspace,
+            owner_id=current_user.id,
+            db=db,
+            repo_id=repo.id,
+            actor_id=current_user.id,
+        )
 
-    # 2. Delete database entity (cascades to findings and scans)
+    # 2. Delete database entity (cascades to findings and scans) + audit event atomically
     db.delete(repo)
-    db.commit()
-
-    # 3. Log audit event
     record_audit_event(
         db=db,
         action="REPOSITORY_DELETED",
@@ -503,5 +570,8 @@ def delete_repository(
         resource_identifier=repo_id,
         actor_id=current_user.id,
         metadata={"repo_name": repo_name},
+        commit=False,
+        raise_on_error=True,
     )
+    db.commit()
 

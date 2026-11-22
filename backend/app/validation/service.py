@@ -118,11 +118,14 @@ def validate_finding_service(
     ai_assisted = False
     ai_model = None
 
-    # 4. Optional AI Assistant Integration
+    # 4. Optional AI Assistant Integration (never fabricate AI results when Gemini is unavailable)
     if request.use_ai_assistant and request.user_authorized:
+        from ..analyzer.client import gemini_analyst_client
         ai_output = invoke_validation_ai_assistant(dossier)
-        ai_assisted = True
-        ai_model = "gemini-2.5-flash"
+        # Only mark as AI-assisted when Gemini actually executed (not when short-circuited by prompt injection / incomplete dossier)
+        if not dossier.has_prompt_injection and not dossier.is_incomplete:
+            ai_assisted = True
+            ai_model = gemini_analyst_client.model
 
         # If AI flags prompt injection, reinforce HUMAN_REVIEW_REQUIRED
         if ai_output.prompt_injection_detected:

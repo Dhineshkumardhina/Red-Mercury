@@ -3,7 +3,12 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from ....analyzer.service import analyze_finding_service, get_finding_analyses_for_finding
-from ....core.auth import get_current_user, get_current_user_optional, verify_finding_ownership, verify_repository_ownership
+from ....core.auth import (
+    get_current_user,
+    require_mutating_role,
+    verify_finding_ownership,
+    verify_repository_ownership,
+)
 from ....core.errors import ForbiddenError, UnauthorizedError
 from ....db.session import get_db
 from ....models.finding import SecurityFinding
@@ -21,7 +26,7 @@ router = APIRouter()
 def analyze_finding(
     payload: FindingAnalysisRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_mutating_role),
 ) -> FindingAnalysisResponse:
     """Analyze a security finding using Gemini or deterministic AppSec engine.
 
@@ -34,12 +39,14 @@ def analyze_finding(
     - Exploitability claim moderation.
     - Separate storage in finding_analyses table without mutating original scanner finding.
     """
+    if payload.repo_id:
+        verify_repository_ownership(repo_id=payload.repo_id, current_user=current_user, db=db)
     if payload.finding_id:
         stored_finding = db.query(SecurityFinding).filter(SecurityFinding.id == payload.finding_id).first()
         if stored_finding:
             verify_finding_ownership(finding_id=stored_finding.id, current_user=current_user, db=db)
-    if payload.repo_id:
-        verify_repository_ownership(repo_id=payload.repo_id, current_user=current_user, db=db)
+            if payload.repo_id and stored_finding.repo_id != payload.repo_id:
+                raise ForbiddenError("Referenced finding does not belong to the specified repository.")
 
     return analyze_finding_service(
         payload=payload,

@@ -7,7 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class VerificationStatus(str, Enum):
     NOT_TESTED = "NOT_TESTED"
+    QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    RETRYING = "RETRYING"
+    CANCELLING = "CANCELLING"
+    CANCELLED = "CANCELLED"
+    INTERRUPTED = "INTERRUPTED"
     VERIFIED_AGAINST_DEFINED_CHECKS = "VERIFIED_AGAINST_DEFINED_CHECKS"
     FAILED_VERIFICATION = "FAILED_VERIFICATION"
     INCONCLUSIVE = "INCONCLUSIVE"
@@ -108,6 +113,7 @@ class VerificationRunRequest(BaseModel):
     regression_test_code: Optional[str] = Field(None, description="Optional inline security test script")
     regression_test_file: Optional[str] = Field(None, description="Optional repository path to regression test")
     timeout_seconds: int = Field(60, ge=5, le=300, description="Verification timeout in seconds")
+    idempotency_key: Optional[str] = Field(None, max_length=128, description="Optional tenant-scoped idempotency key")
 
 
 class VerificationEvidenceSchema(BaseModel):

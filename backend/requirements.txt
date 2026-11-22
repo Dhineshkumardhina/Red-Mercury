@@ -16,6 +16,7 @@ python-multipart>=0.0.9
 pyjwt>=2.8.0
 bcrypt>=4.1.0
 cryptography>=42.0.0
+redis>=5.0.0
 
 # Security Scanning Engines
 bandit>=1.7.8

@@ -42,20 +42,57 @@ def get_service_health() -> HealthResponse:
 
 
 @router.get(
+    "/health/jobs",
+    summary="Durable job queue, outbox, lease, and worker operational telemetry",
+    description="Returns queue depth, pending outbox events, active/running/retrying jobs, expired leases, worker heartbeat age, and latency metrics without sensitive job contents.",
+)
+def get_jobs_health(db: Session = Depends(get_db)) -> JSONResponse:
+    from ....core.jobs import get_job_operational_metrics
+    metrics = get_job_operational_metrics(db=db)
+    return JSONResponse(status_code=status.HTTP_200_OK, content=metrics)
+
+
+@router.get(
     "/ready",
     summary="Kubernetes / Docker readiness probe",
-    description="Returns 200 OK only when backend database connections are verified.",
+    description="Returns 200 OK only when backend database (and Redis in strict mode when configured) connections are verified.",
+)
+@router.get(
+    "/health/ready",
+    summary="Kubernetes / Docker readiness probe (alias)",
 )
 def readiness_probe() -> JSONResponse:
-    if check_db_connection():
-        return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ready"})
-    return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"status": "database_unavailable"})
+    db_ok = check_db_connection()
+    if not db_ok:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "database_unavailable", "database": "disconnected"},
+        )
+    if settings.is_strict_env and settings.REDIS_URL:
+        from ....core.jobs import get_job_redis_client
+        r_client = get_job_redis_client()
+        try:
+            if r_client is None or not r_client.ping():
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"status": "redis_unavailable", "database": "connected", "redis": "disconnected"},
+                )
+        except Exception:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"status": "redis_unavailable", "database": "connected", "redis": "disconnected"},
+            )
+    return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ready"})
 
 
 @router.get(
     "/live",
     summary="Kubernetes / Docker liveness probe",
     description="Returns 200 OK if the ASGI process is running.",
+)
+@router.get(
+    "/health/live",
+    summary="Kubernetes / Docker liveness probe (alias)",
 )
 def liveness_probe() -> JSONResponse:
     return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "alive"})

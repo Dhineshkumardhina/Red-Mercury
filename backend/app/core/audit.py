@@ -38,6 +38,8 @@ def record_audit_event(
     resource_identifier: Optional[str] = None,
     actor_id: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    commit: bool = True,
+    raise_on_error: bool = False,
 ) -> Optional[AuditEvent]:
     """Persist an audit event safely to the database and logger."""
     try:
@@ -52,8 +54,11 @@ def record_audit_event(
             safe_metadata=meta_json,
         )
         db.add(event)
-        db.commit()
-        db.refresh(event)
+        if commit:
+            db.commit()
+            db.refresh(event)
+        else:
+            db.flush()
         
         logger.info(
             f"AUDIT [{action}] by actor={actor_id or 'anonymous'} on {resource_type}:{resource_identifier or 'none'}",
@@ -61,6 +66,9 @@ def record_audit_event(
         )
         return event
     except Exception as exc:
-        db.rollback()
+        if commit:
+            db.rollback()
+        if exc.__class__.__name__ == "StaleWorkerLeaseError" or raise_on_error:
+            raise
         logger.error(f"Failed to record audit event: {exc}", exc_info=True)
         return None

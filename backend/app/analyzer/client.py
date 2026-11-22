@@ -10,7 +10,9 @@ from typing import Any, Dict, Optional
 import httpx
 
 from ..core.config import settings
+from ..core.errors import AppSecException
 from ..core.logging import get_logger
+from ..scanner.base import redact_secrets
 from ..schemas.analyzer import FindingAnalysisResponse
 from .fallback import generate_fallback_analysis
 from .prompts import (
@@ -22,6 +24,18 @@ from .prompts import (
 logger = get_logger("redmercury.analyzer.client")
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+
+class GeminiAssistantUnavailableError(AppSecException):
+    """Controlled error raised when Gemini AI is offline, unconfigured, or fails validation."""
+
+    def __init__(self, message: str = "Gemini AI service is currently unavailable."):
+        safe_msg = redact_secrets(message)
+        super().__init__(
+            message=safe_msg,
+            code="AI_ASSISTANT_UNAVAILABLE",
+            status_code=503,
+        )
 
 
 class GeminiAnalystClient:
@@ -44,6 +58,127 @@ class GeminiAnalystClient:
         if settings.OFFLINE_MODE and not os.environ.get("FORCE_ONLINE"):
             return False
         return bool(self.api_key and self.api_key.strip())
+
+    def _scrub_api_key(self, text: str) -> str:
+        """Ensure the configured API key can never leak into logs or exception messages."""
+        cleaned = redact_secrets(text or "")
+        if self.api_key and self.api_key.strip():
+            cleaned = cleaned.replace(self.api_key.strip(), "[REDACTED_GEMINI_KEY]")
+        return cleaned
+
+    def generate_structured_json(
+        self,
+        system_instruction: str,
+        user_prompt: str,
+    ) -> Dict[str, Any]:
+        """Execute a bounded HTTPS REST call to Gemini and return a parsed JSON object.
+
+        Raises GeminiAssistantUnavailableError on OFFLINE_MODE, missing API key, HTTP 401/403/429/5xx,
+        timeout, network failure, empty candidate response, or malformed JSON — never fabricating output.
+        """
+        if settings.OFFLINE_MODE and not os.environ.get("FORCE_ONLINE"):
+            raise GeminiAssistantUnavailableError(
+                "Gemini AI assistant is disabled because OFFLINE_MODE is enabled."
+            )
+        if not self.api_key or not self.api_key.strip():
+            raise GeminiAssistantUnavailableError(
+                "Gemini AI assistant is not configured (missing GEMINI_API_KEY)."
+            )
+
+        url = f"{GEMINI_API_BASE}/{self.model}:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key.strip(),
+        }
+        payload = {
+            "system_instruction": {
+                "parts": [{"text": system_instruction}]
+            },
+            "contents": [
+                {"parts": [{"text": user_prompt}]}
+            ],
+            "generationConfig": {
+                "response_mime_type": "application/json",
+                "temperature": 0.1,
+            },
+        }
+
+        last_error = "Gemini API request failed."
+        max_attempts = max(1, int(self.max_retries or 1))
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    response = client.post(url, headers=headers, json=payload)
+
+                if response.status_code in (401, 403):
+                    logger.warning(f"Gemini API authentication failed with status {response.status_code}")
+                    raise GeminiAssistantUnavailableError(
+                        f"Gemini API authentication failed (HTTP {response.status_code})."
+                    )
+
+                if response.status_code == 429:
+                    logger.warning(f"Gemini API rate limit exceeded (HTTP 429) on attempt {attempt}/{max_attempts}")
+                    last_error = "Gemini API rate limit exceeded (HTTP 429)."
+                    continue
+
+                if response.status_code != 200:
+                    logger.warning(
+                        f"Gemini API returned status {response.status_code} (attempt {attempt}/{max_attempts})"
+                    )
+                    last_error = f"Gemini API returned HTTP {response.status_code}."
+                    continue
+
+                res_json = response.json()
+                if not isinstance(res_json, dict):
+                    raise GeminiAssistantUnavailableError("Gemini API returned a non-object JSON payload.")
+
+                candidates = res_json.get("candidates") or []
+                if not candidates or not isinstance(candidates, list):
+                    raise GeminiAssistantUnavailableError("Gemini API returned an empty candidates response.")
+
+                first_candidate = candidates[0] if isinstance(candidates[0], dict) else {}
+                content_obj = first_candidate.get("content") if isinstance(first_candidate.get("content"), dict) else {}
+                parts = content_obj.get("parts") or []
+                if not parts or not isinstance(parts, list) or not isinstance(parts[0], dict):
+                    raise GeminiAssistantUnavailableError("Gemini API candidate contained no content parts.")
+
+                raw_text = str(parts[0].get("text") or "").strip()
+                if not raw_text:
+                    raise GeminiAssistantUnavailableError("Gemini API returned empty text content.")
+
+                # Strip optional markdown code fences
+                if raw_text.startswith("```json"):
+                    raw_text = raw_text[7:]
+                elif raw_text.startswith("```"):
+                    raw_text = raw_text[3:]
+                if raw_text.endswith("```"):
+                    raw_text = raw_text[:-3]
+                raw_text = raw_text.strip()
+
+                parsed = json.loads(raw_text)
+                if not isinstance(parsed, dict):
+                    raise GeminiAssistantUnavailableError("Gemini API output must be a JSON object.")
+                return parsed
+
+            except GeminiAssistantUnavailableError:
+                raise
+            except httpx.TimeoutException:
+                logger.warning(f"Gemini API request timed out (attempt {attempt}/{max_attempts})")
+                last_error = f"Gemini API request timed out after {self.timeout}s."
+            except httpx.HTTPError as net_err:
+                safe_err = self._scrub_api_key(str(net_err))
+                logger.warning(f"Gemini API network error (attempt {attempt}/{max_attempts}): {safe_err}")
+                last_error = f"Gemini API network error: {safe_err}"
+            except json.JSONDecodeError:
+                logger.warning(f"Gemini API returned malformed JSON (attempt {attempt}/{max_attempts})")
+                last_error = "Gemini API returned malformed JSON."
+            except Exception as exc:
+                safe_err = self._scrub_api_key(str(exc))
+                logger.error(f"Unexpected error calling Gemini API: {safe_err}")
+                raise GeminiAssistantUnavailableError(f"Gemini API error: {safe_err}")
+
+        raise GeminiAssistantUnavailableError(self._scrub_api_key(last_error))
 
     def analyze(
         self,

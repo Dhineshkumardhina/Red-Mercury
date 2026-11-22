@@ -1,14 +1,27 @@
 """Fix Verification Engine API endpoints."""
+from datetime import datetime, timezone
 import json
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, Query
+import uuid
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 from sqlalchemy.orm import Session
 
 from ....core.audit import record_audit_event
 from ....core.auth import get_current_user, require_mutating_role, verify_finding_ownership, verify_verification_run_ownership
-from ....core.errors import ForbiddenError, NotFoundError, SecurityPolicyViolationError, ValidationError
+from ....core.config import settings
+from ....core.errors import AppSecException, ForbiddenError, NotFoundError, SecurityPolicyViolationError, ValidationError
+from ....core.jobs import (
+    TERMINAL_JOB_STATES,
+    cancel_durable_job,
+    claim_durable_job_by_id,
+    create_durable_job_with_outbox,
+    dispatch_outbox_events,
+    execute_claimed_durable_job,
+    get_existing_idempotent_job,
+)
 from ....db.session import get_db
 from ....models.finding import SecurityFinding
+from ....models.job import DurableJob
 from ....models.repository import Repository
 from ....models.user import User
 from ....models.verification import VerificationEvidence, VerificationRun
@@ -32,17 +45,114 @@ router = APIRouter()
     "",
     response_model=VerificationRunResponse,
     summary="Trigger Fix Verification",
-    description="Run isolated 5-step fix verification checks on a proposed security patch."
+    description="Run isolated 5-step fix verification checks on a proposed security patch via durable job tracking."
 )
 def trigger_fix_verification(
     request: VerificationRunRequest,
+    response: Response,
+    async_mode: bool = Query(False, alias="async", description="Enqueue durable verification job asynchronously (202 Accepted)"),
+    idempotency_key_header: Optional[str] = Header(None, alias="Idempotency-Key"),
     current_user: User = Depends(require_mutating_role),
     db: Session = Depends(get_db),
 ):
-    """Execute fix verification pipeline against isolated disposable workspace with tenant authorization."""
-    # Enforce that the target finding belongs to a repository owned by current_user
-    verify_finding_ownership(finding_id=request.finding_id, current_user=current_user, db=db)
-    return execute_fix_verification(request, db=db, user_id=current_user.id)
+    """Execute or enqueue fix verification pipeline with atomic concurrency reservation and tenant authorization."""
+    if not request.finding_id or not str(request.finding_id).strip():
+        raise ValidationError("Finding ID cannot be empty.")
+    if request.proposed_patch is None or not str(request.proposed_patch).strip():
+        raise ValidationError("Proposed patch diff cannot be empty.")
+
+    # 1. Enforce that the target finding belongs to a repository owned by current_user
+    finding = verify_finding_ownership(finding_id=request.finding_id, current_user=current_user, db=db)
+
+    # 2. Check tenant-scoped idempotency key (Task 4)
+    effective_idem_key = (idempotency_key_header or request.idempotency_key or "").strip() or None
+    if effective_idem_key:
+        existing_job = get_existing_idempotent_job(
+            db=db,
+            tenant_id=current_user.id,
+            job_type="verification",
+            idempotency_key=effective_idem_key,
+        )
+        if existing_job is not None:
+            existing_run = db.query(VerificationRun).filter(VerificationRun.id == existing_job.resource_id).first()
+            if existing_run is not None:
+                if existing_run.finding_id != finding.id:
+                    raise AppSecException(
+                        message="Idempotency key is already bound to a different verification finding.",
+                        code="IDEMPOTENCY_KEY_CONFLICT",
+                        status_code=status.HTTP_409_CONFLICT,
+                    )
+                response.status_code = status.HTTP_202_ACCEPTED if async_mode else status.HTTP_200_OK
+                return _format_run_response(existing_run, db)
+
+    # 3. Create authoritative VerificationRun + DurableJob + ActiveJobSlot + JobOutboxEvent in one transaction
+    run_id = f"vr_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    run_record = VerificationRun(
+        id=run_id,
+        finding_id=finding.id,
+        patch_id=request.patch_id,
+        status=VerificationStatus.QUEUED.value,
+        patch_diff=request.proposed_patch,
+        scanner_config=json.dumps(request.scanner_config or {}),
+        started_at=datetime.now(timezone.utc),
+    )
+    try:
+        db.add(run_record)
+        db.flush()
+
+        job_payload = {
+            "finding_id": finding.id,
+            "proposed_patch": request.proposed_patch,
+            "patch_id": request.patch_id,
+            "scanner_names": request.scanner_names,
+            "scanner_config": request.scanner_config or {},
+            "run_existing_tests": request.run_existing_tests,
+            "run_regression_tests": request.run_regression_tests,
+            "regression_test_code": request.regression_test_code,
+            "regression_test_file": request.regression_test_file,
+            "timeout_seconds": request.timeout_seconds,
+        }
+
+        job, outbox, is_new = create_durable_job_with_outbox(
+            db=db,
+            user=current_user,
+            job_type="verification",
+            resource_id=run_record.id,
+            repository_id=finding.repo_id,
+            payload=job_payload,
+            idempotency_key=effective_idem_key,
+            reserve_slot=True,
+        )
+    except Exception:
+        db.rollback()
+        raise
+    if not is_new:
+        db.rollback()
+        existing_run = db.query(VerificationRun).filter(VerificationRun.id == job.resource_id).first()
+        if existing_run:
+            response.status_code = status.HTTP_202_ACCEPTED if async_mode else status.HTTP_200_OK
+            return _format_run_response(existing_run, db)
+
+    db.commit()
+    db.refresh(run_record)
+    db.refresh(job)
+
+    dispatch_outbox_events(db=db, job_id=job.id)
+
+    if async_mode or settings.JOB_DISPATCH_MODE.lower() == "queue_only":
+        response.status_code = status.HTTP_202_ACCEPTED
+        return _format_run_response(run_record, db)
+
+    claimed = claim_durable_job_by_id(db=db, job_id=job.id, worker_id="api-verification-worker")
+    if claimed is not None:
+        execute_claimed_durable_job(
+            db=db,
+            job=claimed,
+            worker_id="api-verification-worker",
+            start_heartbeat=False,
+        )
+    db.refresh(run_record)
+    return _format_run_response(run_record, db)
 
 
 @router.post(
@@ -134,6 +244,61 @@ def rerun_verification_run(
         run_regression_tests=True,
     )
     return execute_fix_verification(request, db=db, user_id=current_user.id)
+
+
+@router.post(
+    "/{id}/cancel",
+    response_model=VerificationRunResponse,
+    summary="Cancel Fix Verification Run",
+    description="Cancel a queued or running fix verification job, stop sandbox containers, and clean up temporary workspaces."
+)
+def cancel_verification_run(
+    id: str,
+    current_user: User = Depends(require_mutating_role),
+    db: Session = Depends(get_db),
+):
+    """Cancel a queued or running verification job and stop associated Docker sandbox containers."""
+    run = verify_verification_run_ownership(run_id=id, current_user=current_user, db=db)
+    djob = (
+        db.query(DurableJob)
+        .filter(DurableJob.job_type == "verification", DurableJob.resource_id == run.id)
+        .first()
+    )
+
+    if run.status in (
+        VerificationStatus.VERIFIED_AGAINST_DEFINED_CHECKS.value,
+        VerificationStatus.FAILED_VERIFICATION.value,
+        VerificationStatus.CANCELLED.value,
+        "COMPLETED",
+    ):
+        if djob and djob.status not in TERMINAL_JOB_STATES:
+            cancel_durable_job(
+                db=db,
+                job=djob,
+                resource_type="verification",
+                resource_id=run.id,
+                actor_id=current_user.id,
+            )
+        return _format_run_response(run, db)
+
+    cancel_durable_job(
+        db=db,
+        job=djob,
+        resource_type="verification",
+        resource_id=run.id,
+        actor_id=current_user.id,
+    )
+    db.refresh(run)
+
+    record_audit_event(
+        db=db,
+        action="VERIFICATION_CANCELLED",
+        resource_type="verification_run",
+        resource_identifier=run.id,
+        actor_id=current_user.id,
+        metadata={"finding_id": run.finding_id, "job_id": djob.id if djob else None},
+    )
+    return _format_run_response(run, db)
 
 
 @router.post(

@@ -16,7 +16,7 @@ from .core.errors import (
     validation_exception_handler,
 )
 from .core.logging import get_logger, setup_logging
-from .core.security import AuthRateLimitMiddleware, RequestSizeLimitMiddleware, SecurityHeadersMiddleware, hash_password
+from .core.security import AuthRateLimitMiddleware, RequestSizeLimitMiddleware, SecurityHeadersMiddleware
 from .db.base import Base
 from .db.session import engine, SessionLocal
 from .models.user import User
@@ -27,28 +27,6 @@ from .models.verification import VerificationRun
 # Initialize structured logging
 setup_logging(level=settings.LOG_LEVEL, json_format=settings.LOG_FORMAT_JSON)
 logger = get_logger("redmercury.main")
-
-
-def seed_initial_dev_data() -> None:
-    """Ensure at least one user exists for local testing without dummy entities."""
-    db = SessionLocal()
-    try:
-        user_count = db.query(User).count()
-        if user_count == 0:
-            dev_user = User(
-                id="ade14bbe-e0f0-4c8e-beff-ff9f720fe288",
-                email="dhineshkumardhina@gmail.com",
-                password_hash=hash_password(settings.DEV_SEED_PASSWORD),
-                account_status="active",
-                role="admin",
-            )
-            db.add(dev_user)
-            db.commit()
-    except Exception as exc:
-        db.rollback()
-        logger.warning(f"User initialization skipped: {exc}")
-    finally:
-        db.close()
 
 
 @asynccontextmanager
@@ -86,23 +64,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         row = conn.execute(sa.text("SELECT version_num FROM alembic_version")).fetchone()
                         current_rev = row[0] if row else None
 
-                HEAD_REVISION = "0012_add_revoked_tokens_and_user_role"
+                HEAD_REVISION = "0014_add_durable_jobs_and_outbox"
                 if has_alembic and current_rev != HEAD_REVISION:
                     command.upgrade(cfg, "head")
                 elif not has_alembic:
                     command.stamp(cfg, "head")
         except Exception as exc:
             logger.warning(f"Database schema auto-migration check skipped: {exc}")
-        seed_initial_dev_data()
 
-    # Reconcile any interrupted or hanging jobs from previous server restarts
+    # Reconcile any expired worker leases, undispatched outbox events, or legacy interrupted jobs on startup
     try:
         reconcile_db = SessionLocal()
-        from .core.quotas import reconcile_interrupted_jobs
-        reconcile_interrupted_jobs(reconcile_db)
+        from .core.jobs import reconcile_jobs_on_startup
+        reconcile_jobs_on_startup(reconcile_db, component="api")
         reconcile_db.close()
     except Exception as exc:
-        logger.warning(f"Failed to reconcile interrupted jobs on startup: {exc}")
+        logger.warning(f"Failed to reconcile durable jobs on startup: {exc}")
 
     yield
 
@@ -111,9 +88,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_application() -> FastAPI:
     """FastAPI application factory."""
-    docs_url = "/docs" if (settings.DOCS_ENABLED and not settings.is_production) else None
-    redoc_url = "/redoc" if (settings.DOCS_ENABLED and not settings.is_production) else None
-    openapi_url = f"{settings.API_V1_PREFIX}/openapi.json" if (settings.DOCS_ENABLED and not settings.is_production) else None
+    docs_url = "/docs" if (settings.DOCS_ENABLED and not settings.is_strict_env) else None
+    redoc_url = "/redoc" if (settings.DOCS_ENABLED and not settings.is_strict_env) else None
+    openapi_url = f"{settings.API_V1_PREFIX}/openapi.json" if (settings.DOCS_ENABLED and not settings.is_strict_env) else None
 
     app = FastAPI(
         title=f"{settings.APP_NAME} API",
@@ -126,7 +103,7 @@ def create_application() -> FastAPI:
     )
 
     # 0. Trusted Host Header Validation (Guards against Host header injection / cache poisoning)
-    if settings.is_production:
+    if settings.is_strict_env:
         from starlette.middleware.trustedhost import TrustedHostMiddleware
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
 
@@ -135,11 +112,11 @@ def create_application() -> FastAPI:
     app.add_middleware(RequestSizeLimitMiddleware)
     app.add_middleware(AuthRateLimitMiddleware)
 
-    # 2. CORS configuration (permits any localhost / 127.0.0.1 port in dev/desktop, exact allowlist only in prod)
+    # 2. CORS configuration (permits any localhost / 127.0.0.1 port in dev/desktop, exact allowlist only in prod/staging)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
-        allow_origin_regex=None if settings.is_production else r"^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$",
+        allow_origin_regex=None if settings.is_strict_env else r"^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$",
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-CSRF-Token", "Accept", "Origin"],

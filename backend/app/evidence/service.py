@@ -49,7 +49,34 @@ def record_security_evidence(
     provenance: str = "scanner_observed",
     checks_not_performed: Optional[List[str]] = None,
 ) -> SecurityEvidence:
-    """Stores an evidence record with secret scrubbing and SHA-256 hashing."""
+    """Stores an evidence record with secret scrubbing, FK ownership verification, and SHA-256 hashing."""
+    from ..core.errors import ForbiddenError
+
+    # Service-layer cross-repository / cross-tenant FK consistency checks (SEC-14)
+    if scan_id:
+        scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if not scan:
+            raise NotFoundError(f"Scan with id '{scan_id}' not found.")
+        if scan.repository_id != repository_id:
+            raise ForbiddenError("Referenced scan does not belong to the specified repository.")
+
+    if finding_id:
+        finding = db.query(SecurityFinding).filter(SecurityFinding.id == finding_id).first()
+        if not finding:
+            raise NotFoundError(f"Security finding with id '{finding_id}' not found.")
+        if finding.repo_id != repository_id:
+            raise ForbiddenError("Referenced security finding does not belong to the specified repository.")
+
+    if verification_run_id:
+        vrun = db.query(VerificationRun).filter(VerificationRun.id == verification_run_id).first()
+        if not vrun:
+            raise NotFoundError(f"Verification run with ID '{verification_run_id}' was not found.")
+        vfinding = db.query(SecurityFinding).filter(SecurityFinding.id == vrun.finding_id).first() if vrun.finding_id else None
+        if not vfinding or vfinding.repo_id != repository_id:
+            raise ForbiddenError("Referenced verification run does not belong to the specified repository.")
+        if finding_id and vrun.finding_id != finding_id:
+            raise ForbiddenError("Referenced verification run does not match the specified finding.")
+
     sanitized = sanitize_payload(raw_payload)
     content_hash = compute_evidence_hash(sanitized)
     
@@ -199,6 +226,133 @@ def verify_verification_run_integrity(
     )
 
 
+def _map_severity_to_sarif_level(severity: Optional[str]) -> str:
+    """Map Red Mercury / scanner severity to OASIS SARIF 2.1.0 result level."""
+    sev = (severity or "MEDIUM").strip().upper()
+    if sev in ("CRITICAL", "HIGH"):
+        return "error"
+    if sev == "MEDIUM":
+        return "warning"
+    return "note"
+
+
+def _generate_sarif_findings_report(
+    repo: Repository,
+    findings: List[SecurityFinding],
+    assessments: List[Any],
+    latest_scan: Optional[Scan],
+    checks_not_performed: List[str],
+    now_str: str,
+) -> str:
+    """Build a standard OASIS SARIF 2.1.0 document for repository security findings (Task 6 / REL-02)."""
+    import hashlib
+    from ..core.config import settings
+
+    rules_by_id: Dict[str, Dict[str, Any]] = {}
+    results: List[Dict[str, Any]] = []
+    artifacts_by_uri: Dict[str, Dict[str, Any]] = {}
+
+    for f, a in zip(findings, assessments):
+        rule_id = (f.rule_identifier or f.cwe or "REDMERCURY-RULE").strip()
+        sev_str = (a.original_scanner_severity or f.severity or "MEDIUM").upper()
+        sarif_level = _map_severity_to_sarif_level(sev_str)
+        safe_title = sanitize_evidence_text(f.title or f.cwe or rule_id)
+        safe_msg = sanitize_evidence_text(
+            f.title or f.evidence_reference or f"Security finding '{rule_id}' detected by {f.scanner_name or 'scanner'}."
+        )
+
+        if rule_id not in rules_by_id:
+            rule_entry: Dict[str, Any] = {
+                "id": rule_id,
+                "name": safe_title[:128] or rule_id,
+                "shortDescription": {"text": safe_title or rule_id},
+                "fullDescription": {
+                    "text": f"Security rule '{rule_id}' reported by {f.scanner_name or 'Red Mercury Security Engine'}."
+                },
+                "defaultConfiguration": {"level": sarif_level},
+                "properties": {
+                    "tags": ["security", str(f.cwe or rule_id)],
+                    "security-severity": (
+                        "9.5" if sev_str == "CRITICAL"
+                        else "7.5" if sev_str == "HIGH"
+                        else "5.0" if sev_str == "MEDIUM"
+                        else "2.5"
+                    ),
+                },
+            }
+            rules_by_id[rule_id] = rule_entry
+
+        raw_path = (f.file_path or "").strip().replace("\\", "/").lstrip("/")
+        line_num = f.line_number if (isinstance(f.line_number, int) and f.line_number >= 1) else None
+
+        locations: List[Dict[str, Any]] = []
+        if raw_path:
+            phys_loc: Dict[str, Any] = {
+                "artifactLocation": {
+                    "uri": raw_path,
+                    "uriBaseId": "%SRCROOT%",
+                }
+            }
+            if line_num is not None:
+                phys_loc["region"] = {"startLine": line_num}
+            locations.append({"physicalLocation": phys_loc})
+            if raw_path not in artifacts_by_uri:
+                artifacts_by_uri[raw_path] = {
+                    "location": {"uri": raw_path, "uriBaseId": "%SRCROOT%"}
+                }
+
+        fp_seed = f"{repo.id}:{rule_id}:{raw_path}:{line_num or 0}:{f.id}"
+        fp_hash = hashlib.sha256(fp_seed.encode("utf-8")).hexdigest()
+
+        results.append({
+            "ruleId": rule_id,
+            "level": sarif_level,
+            "message": {"text": safe_msg},
+            "locations": locations,
+            "fingerprints": {"redmercuryFindingHash/v1": fp_hash},
+            "partialFingerprints": {"primaryLocationLineHash": f"{fp_hash[:32]}:1"},
+            "properties": {
+                "finding_id": f.id,
+                "scanner_name": f.scanner_name,
+                "cwe": f.cwe,
+                "original_severity": sev_str,
+                "contextual_priority": a.contextual_priority.value,
+                "priority_score": a.priority_score,
+                "evidence_completeness": a.evidence_completeness.value,
+                "verification_status": a.verification_status,
+            },
+        })
+
+    sarif_doc = {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "Red Mercury Security Engine",
+                        "version": getattr(settings, "APP_VERSION", "1.0.0"),
+                        "informationUri": "https://github.com/Dhineshkumardhina/Red-Mercury",
+                        "rules": list(rules_by_id.values()),
+                    }
+                },
+                "artifacts": list(artifacts_by_uri.values()),
+                "results": results,
+                "properties": {
+                    "repository_id": repo.id,
+                    "repository_name": repo.name,
+                    "scan_id": latest_scan.id if latest_scan else None,
+                    "generated_at": now_str,
+                    "total_findings": len(findings),
+                    "checks_not_performed": checks_not_performed,
+                    "authenticity_disclaimer": AUTHENTICITY_DISCLAIMER,
+                },
+            }
+        ],
+    }
+    return json.dumps(sarif_doc, indent=2)
+
+
 def generate_findings_report(
 
     db: Session,
@@ -277,6 +431,15 @@ def generate_findings_report(
             ),
         }
         content_str = json.dumps(report_data, indent=2)
+    elif format == ReportExportFormat.SARIF:
+        content_str = _generate_sarif_findings_report(
+            repo=repo,
+            findings=findings,
+            assessments=assessments,
+            latest_scan=latest_scan,
+            checks_not_performed=checks_not_performed,
+            now_str=now_str,
+        )
     else:
         # Markdown generation
         lines = [

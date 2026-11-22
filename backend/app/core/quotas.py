@@ -85,18 +85,60 @@ def check_verification_concurrency(user: User, db: Session) -> None:
 
 
 def reconcile_interrupted_jobs(db: Session) -> int:
-    """Transition hanging/interrupted jobs into a deterministic terminated state upon service startup."""
+    """Transition hanging/interrupted jobs into a deterministic state upon service startup.
+
+    Phase 6 Invariants:
+    1. First runs lease-aware recovery (`recover_expired_job_leases`) for DurableJob records.
+    2. NEVER marks a running Scan or VerificationRun as interrupted if it has an active, non-expired worker lease!
+    3. Reconciles legacy lease-less stale jobs whose `created_at <= stale_cutoff`.
+    """
     reconciled_count = 0
     now = datetime.now(timezone.utc)
     stale_cutoff = now - timedelta(minutes=settings.STALE_JOB_TIMEOUT_MINUTES)
 
-    # 1. Reconcile interrupted scans
+    from ..models.job import ActiveJobSlot, DurableJob
+    from .jobs import JobState, recover_expired_job_leases
+
+    lease_stats = recover_expired_job_leases(db=db)
+    reconciled_count += (
+        lease_stats.get("retried", 0)
+        + lease_stats.get("failed", 0)
+        + lease_stats.get("cancelled", 0)
+    )
+
+    # 1. Reconcile legacy stale scans that do NOT have an active non-expired worker lease
     hanging_scans = db.query(Scan).filter(
         Scan.status.in_(["running", "pending", "queued"]),
         Scan.created_at <= stale_cutoff,
     ).all()
 
     for scan in hanging_scans:
+        djob = (
+            db.query(DurableJob)
+            .filter(DurableJob.job_type == "scan", DurableJob.resource_id == scan.id)
+            .first()
+        )
+        if djob is not None:
+            exp = djob.lease_expires_at
+            if exp is not None and exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            djob_created = djob.created_at
+            if djob_created is not None and djob_created.tzinfo is None:
+                djob_created = djob_created.replace(tzinfo=timezone.utc)
+            # Do NOT interrupt a healthy running job with a valid lease or a healthy queued durable job
+            if djob.status == JobState.RUNNING.value and exp is not None and exp > now:
+                continue
+            if djob.status in (JobState.QUEUED.value, JobState.RETRYING.value) and djob_created is not None and djob_created > stale_cutoff:
+                continue
+            djob.status = JobState.INTERRUPTED.value
+            djob.completed_at = now
+            djob.lease_token = None
+            djob.lease_expires_at = None
+            djob.quota_reserved = False
+            djob.failure_category = "interrupted"
+            djob.error_detail = "Scan execution interrupted by worker restart, host eviction, or timeout."
+            db.query(ActiveJobSlot).filter(ActiveJobSlot.job_id == djob.id).delete(synchronize_session=False)
+
         scan.status = "interrupted"
         scan.completed_at = now
         scan.summary = json.dumps({
@@ -106,13 +148,33 @@ def reconcile_interrupted_jobs(db: Session) -> int:
         reconciled_count += 1
         logger.warning(f"Reconciled hanging scan {scan.id} -> interrupted")
 
-    # 2. Reconcile interrupted verification runs
+    # 2. Reconcile interrupted verification runs that do NOT have an active non-expired worker lease
     hanging_runs = db.query(VerificationRun).filter(
         VerificationRun.status == "RUNNING",
         VerificationRun.created_at <= stale_cutoff,
     ).all()
 
     for run in hanging_runs:
+        djob = (
+            db.query(DurableJob)
+            .filter(DurableJob.job_type == "verification", DurableJob.resource_id == run.id)
+            .first()
+        )
+        if djob is not None:
+            exp = djob.lease_expires_at
+            if exp is not None and exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if djob.status == JobState.RUNNING.value and exp is not None and exp > now:
+                continue
+            djob.status = JobState.INTERRUPTED.value
+            djob.completed_at = now
+            djob.lease_token = None
+            djob.lease_expires_at = None
+            djob.quota_reserved = False
+            djob.failure_category = "interrupted"
+            djob.error_detail = "Verification interrupted by worker container restart or timeout."
+            db.query(ActiveJobSlot).filter(ActiveJobSlot.job_id == djob.id).delete(synchronize_session=False)
+
         run.status = "INCONCLUSIVE"
         run.completed_at = now
         reasons = run.reasons or []

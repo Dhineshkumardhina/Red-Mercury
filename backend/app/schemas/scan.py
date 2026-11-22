@@ -10,6 +10,7 @@ class ScanCreate(BaseModel):
     summary: Optional[str] = Field(default=None, examples=["Automated daily scan"])
     tools: Optional[List[str]] = Field(default=None, description="Optional list of specific scanner tools to run")
     timeout_seconds: Optional[int] = Field(default=60, ge=5, le=300, description="Timeout limit per scanner in seconds")
+    idempotency_key: Optional[str] = Field(default=None, max_length=128, description="Optional tenant-scoped idempotency key")
 
 
 class ScanRead(BaseModel):
@@ -67,6 +68,14 @@ class ScanStatusResponse(BaseModel):
     execution_time_seconds: Optional[float] = None
     total_findings: Optional[int] = None
     error_message: Optional[str] = None
+    job_id: Optional[str] = None
+    attempt_count: int = 0
+    max_attempts: int = 3
+    worker_id: Optional[str] = None
+    heartbeat_at: Optional[datetime] = None
+    lease_expires_at: Optional[datetime] = None
+    next_retry_at: Optional[datetime] = None
+    failure_category: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -9,6 +9,7 @@ from ....core.auth import (
     require_mutating_role,
     verify_finding_ownership,
     verify_repository_ownership,
+    verify_scan_belongs_to_repository,
 )
 from ....core.errors import NotFoundError
 from ....db.session import get_db
@@ -119,6 +120,15 @@ def create_finding(
 ) -> SecurityFinding:
     # Verify the target repository exists and is owned by the current user
     verify_repository_ownership(repo_id=finding_in.repo_id, current_user=current_user, db=db)
+
+    # Verify optional scan_id exists, is owned by current_user, and belongs to finding_in.repo_id (SEC-14)
+    if finding_in.scan_id:
+        verify_scan_belongs_to_repository(
+            scan_id=finding_in.scan_id,
+            repo_id=finding_in.repo_id,
+            current_user=current_user,
+            db=db,
+        )
 
     scanner_id = finding_in.scanner_identifier or finding_in.scanner_name or "Semgrep OSS"
     rule_id = finding_in.rule_identifier or finding_in.cwe or "CWE-General"

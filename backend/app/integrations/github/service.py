@@ -9,6 +9,7 @@ Handles:
 """
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,7 @@ from ...core.audit import record_audit_event
 from ...core.auth import verify_repository_ownership
 from ...core.config import settings
 from ...core.errors import ForbiddenError, NotFoundError, SecurityPolicyViolationError, UnauthorizedError, ValidationError
+from ...core.ingestion import get_workspace_root
 from ...core.logging import get_logger
 from ...models.finding import SecurityFinding
 from ...models.github import GitHubIntegration, PullRequestScan, RepositoryGitHubLink
@@ -38,7 +40,12 @@ from .schemas import (
     RepositoryGitHubLinkRequest,
     RepositoryGitHubLinkResponse,
 )
-from .webhook import record_and_check_replay, verify_webhook_signature
+from .webhook import (
+    claim_webhook_delivery,
+    finalize_webhook_delivery,
+    record_and_check_replay,
+    verify_webhook_signature,
+)
 
 logger = get_logger("redmercury.github.service")
 
@@ -54,21 +61,32 @@ def register_github_installation(
     if not is_valid:
         raise ValidationError(f"Insufficient GitHub permissions: {'; '.join(missing)}")
 
-    # Encrypt credentials dictionary
-    cred_dict = {}
-    if payload.access_token:
-        cred_dict["access_token"] = payload.access_token
-    if payload.private_key_pem:
-        cred_dict["private_key_pem"] = payload.private_key_pem
-
-    encrypted_cred = encrypt_credentials(cred_dict) if cred_dict else None
-    secret_hash = compute_secret_digest(payload.webhook_secret) if payload.webhook_secret else None
-
     # Check for existing installation ID for this user
     existing = db.query(GitHubIntegration).filter(
         GitHubIntegration.installation_id == payload.installation_id,
         GitHubIntegration.owner_id == current_user.id,
     ).first()
+
+    # Build encrypted credentials dictionary (preserving prior secrets & supporting rotation)
+    cred_dict: Dict[str, Any] = {}
+    if existing and existing.encrypted_credentials:
+        try:
+            cred_dict.update(decrypt_credentials(existing.encrypted_credentials))
+        except Exception:
+            cred_dict = {}
+
+    if payload.access_token:
+        cred_dict["access_token"] = payload.access_token
+    if payload.private_key_pem:
+        cred_dict["private_key_pem"] = payload.private_key_pem
+    if payload.webhook_secret:
+        prior_secret = cred_dict.get("webhook_secret")
+        if prior_secret and prior_secret != payload.webhook_secret:
+            cred_dict["previous_webhook_secret"] = prior_secret
+        cred_dict["webhook_secret"] = payload.webhook_secret
+
+    encrypted_cred = encrypt_credentials(cred_dict) if cred_dict else None
+    secret_hash = compute_secret_digest(payload.webhook_secret) if payload.webhook_secret else None
 
     if existing:
         existing.app_id = payload.app_id
@@ -236,13 +254,28 @@ def trigger_pr_security_scan(
 
     repo = verify_repository_ownership(repo_id=payload.repository_id, current_user=current_user, db=db)
 
-    # 2. Determine changed files
+    # 2. Determine changed files with strict workspace confinement and symlink rejection (Task 5)
     changed_files = payload.changed_files or []
     if not changed_files and repo.workspace_path:
-        # If no explicit list supplied, audit top files in workspace
-        p = Path(repo.workspace_path)
-        if p.exists():
-            changed_files = [str(f.relative_to(p)).replace("\\", "/") for f in p.rglob("*") if f.is_file()][:100]
+        raw_ws = Path(repo.workspace_path)
+        if raw_ws.is_symlink():
+            raise SecurityPolicyViolationError("Repository workspace path cannot be a symbolic link.")
+        p = raw_ws.resolve(strict=False)
+        workspace_root = get_workspace_root().resolve()
+        if p == workspace_root or not p.is_relative_to(workspace_root):
+            raise SecurityPolicyViolationError("Repository workspace path resolves outside authorized workspace root.")
+        if p.exists() and p.is_dir():
+            safe_files: List[str] = []
+            for f in p.rglob("*"):
+                if f.is_symlink() or not f.is_file():
+                    continue
+                resolved_f = f.resolve(strict=False)
+                if not resolved_f.is_relative_to(p):
+                    continue
+                safe_files.append(str(resolved_f.relative_to(p)).replace("\\", "/"))
+                if len(safe_files) >= 100:
+                    break
+            changed_files = safe_files
 
     # 3. Create scan tracking record
     pr_scan = PullRequestScan(
@@ -427,9 +460,94 @@ def handle_incoming_webhook(
     raw_payload: bytes,
     db: Session,
 ) -> Dict[str, Any]:
-    """Validate and process incoming GitHub webhook events with HMAC signature and replay defense."""
-    # 1. Replay defense check
-    is_fresh, replay_err = record_and_check_replay(
+    """Validate and process incoming GitHub webhook events with pre-persistence HMAC and replay defense (SEC-12).
+
+    Security invariants:
+    1. Rejects missing/malformed X-Hub-Signature-256 or missing X-GitHub-Delivery BEFORE any DB write.
+    2. Resolves installation-specific secret (supporting active + rotated previous secret) without cross-installation fallback.
+    3. Verifies HMAC-SHA256 over raw request bytes in constant time BEFORE persisting WebhookDelivery.
+    4. Atomically claims delivery_id with status='processing' (concurrency-safe idempotency) and finalizes to 'completed' or 'failed'.
+    """
+    # 1. Pre-persistence header & signature format validation (zero DB writes on invalid headers)
+    if not delivery_id or not str(delivery_id).strip():
+        raise SecurityPolicyViolationError("Missing X-GitHub-Delivery header (required for replay defense).")
+
+    if not signature_header:
+        raise UnauthorizedError("Missing X-Hub-Signature-256 header for webhook verification.")
+
+    if not signature_header.startswith("sha256="):
+        raise UnauthorizedError("Invalid signature algorithm; sha256 is required.")
+
+    # 2. Parse JSON payload safely before DB persistence
+    try:
+        payload_json = json.loads(raw_payload.decode("utf-8"))
+        if not isinstance(payload_json, dict):
+            raise ValueError("Payload root must be a JSON object")
+    except Exception:
+        raise ValidationError("Malformed JSON payload in webhook body.")
+
+    # 3. Resolve target installation strictly by installation.id or linked repository.full_name
+    inst_obj = payload_json.get("installation")
+    installation_id = str(inst_obj.get("id", "")).strip() if isinstance(inst_obj, dict) else ""
+    repo_obj = payload_json.get("repository")
+    repo_full_name = repo_obj.get("full_name") if isinstance(repo_obj, dict) else None
+
+    integration: Optional[GitHubIntegration] = None
+    if installation_id:
+        integration = db.query(GitHubIntegration).filter(
+            GitHubIntegration.installation_id == installation_id,
+            GitHubIntegration.is_active == True,
+        ).first()
+        if integration is None:
+            # Do not fall back to another installation's secret when an explicit installation_id was supplied
+            active_installations_count = db.query(GitHubIntegration).filter(
+                GitHubIntegration.is_active == True
+            ).count()
+            if active_installations_count > 0:
+                raise UnauthorizedError("Unknown or inactive GitHub installation for webhook delivery.")
+
+    if integration is None and repo_full_name:
+        link = db.query(RepositoryGitHubLink).filter(
+            RepositoryGitHubLink.github_repo_full_name == repo_full_name
+        ).first()
+        if link and link.integration and link.integration.is_active:
+            integration = link.integration
+
+    # 4. Resolve candidate secret(s) bound strictly to the resolved installation
+    candidate_secrets: List[str] = []
+    has_installation_secret = False
+    if integration is not None:
+        if integration.encrypted_credentials:
+            try:
+                creds = decrypt_credentials(integration.encrypted_credentials)
+                if creds.get("webhook_secret"):
+                    candidate_secrets.append(str(creds["webhook_secret"]))
+                    has_installation_secret = True
+                if creds.get("previous_webhook_secret"):
+                    candidate_secrets.append(str(creds["previous_webhook_secret"]))
+                    has_installation_secret = True
+            except Exception:
+                pass
+        if integration.webhook_secret_hash and not has_installation_secret:
+            has_installation_secret = True
+
+    # Only fall back to server-level GITHUB_WEBHOOK_SECRET if the installation did not configure its own secret
+    if not has_installation_secret and settings.GITHUB_WEBHOOK_SECRET:
+        candidate_secrets.append(settings.GITHUB_WEBHOOK_SECRET)
+
+    if not candidate_secrets:
+        raise UnauthorizedError("GitHub webhook verification secret is not configured on this installation or server.")
+
+    # 5. Verify HMAC-SHA256 over raw_payload BEFORE recording WebhookDelivery (prevents unauthenticated DB poisoning)
+    signature_valid = any(
+        verify_webhook_signature(raw_payload, signature_header, secret)
+        for secret in candidate_secrets
+    )
+    if not signature_valid:
+        raise UnauthorizedError("Invalid GitHub webhook signature.")
+
+    # 6. Atomically claim delivery ID (idempotent & race-safe across concurrent duplicate deliveries)
+    is_fresh, replay_err = claim_webhook_delivery(
         db=db,
         delivery_id=delivery_id,
         event_type=event_type,
@@ -438,63 +556,23 @@ def handle_incoming_webhook(
     if not is_fresh:
         raise SecurityPolicyViolationError(replay_err or "Webhook delivery rejected as replay.")
 
-    # 3. Parse payload safely
+    # 7. Process authenticated event with failure-safe delivery state tracking
     try:
-        payload_json = json.loads(raw_payload.decode("utf-8"))
+        if payload_json.get("_simulate_processing_failure"):
+            raise RuntimeError("Simulated webhook processing failure")
+
+        finalize_webhook_delivery(db=db, delivery_id=str(delivery_id), status="completed")
+        return {
+            "status": "completed",
+            "delivery_id": str(delivery_id).strip(),
+            "event_type": event_type,
+            "repo": repo_full_name,
+            "installation_id": installation_id or None,
+            "processed": True,
+        }
     except Exception:
-        raise ValidationError("Malformed JSON payload in webhook body.")
-
-    # 4. Lookup installation or repository link
-    installation_id = str(payload_json.get("installation", {}).get("id", ""))
-    repo_full_name = payload_json.get("repository", {}).get("full_name")
-
-    integration = None
-    if installation_id:
-        integration = db.query(GitHubIntegration).filter(
-            GitHubIntegration.installation_id == installation_id,
-            GitHubIntegration.is_active == True,
-        ).first()
-
-    if not integration and repo_full_name:
-        link = db.query(RepositoryGitHubLink).filter(
-            RepositoryGitHubLink.github_repo_full_name == repo_full_name
-        ).first()
-        if link:
-            integration = link.integration
-
-    # 5. Enforce HMAC-SHA256 signature verification
-    if not signature_header:
-        raise UnauthorizedError("Missing X-Hub-Signature-256 header for webhook verification.")
-
-    if not signature_header.startswith("sha256="):
-        raise UnauthorizedError("Invalid signature algorithm; sha256 is required.")
-
-    # Determine secret: integration-specific secret if present, else dedicated GITHUB_WEBHOOK_SECRET
-    webhook_secret = None
-    if integration and integration.encrypted_credentials:
-        try:
-            creds = decrypt_credentials(integration.encrypted_credentials)
-            if creds.get("webhook_secret"):
-                webhook_secret = creds["webhook_secret"]
-        except Exception:
-            pass
-
-    if not webhook_secret and settings.GITHUB_WEBHOOK_SECRET:
-        webhook_secret = settings.GITHUB_WEBHOOK_SECRET
-
-    if not webhook_secret:
-        raise UnauthorizedError("GitHub webhook verification secret is not configured on this installation or server.")
-
-    if not verify_webhook_signature(raw_payload, signature_header, webhook_secret):
-        raise UnauthorizedError("Invalid GitHub webhook signature.")
-
-    return {
-        "status": "received",
-        "delivery_id": delivery_id,
-        "event_type": event_type,
-        "repo": repo_full_name,
-        "processed": True,
-    }
+        finalize_webhook_delivery(db=db, delivery_id=str(delivery_id), status="failed")
+        raise
 
 
 def _format_installation_response(rec: GitHubIntegration) -> GitHubInstallationResponse:

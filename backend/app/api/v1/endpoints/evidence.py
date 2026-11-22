@@ -1,10 +1,18 @@
 """Security evidence management and report generation API endpoints."""
+import re
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
 from ....core.audit import record_audit_event
-from ....core.auth import get_current_user, require_mutating_role, verify_repository_ownership
+from ....core.auth import (
+    get_current_user,
+    require_mutating_role,
+    verify_finding_belongs_to_repository,
+    verify_repository_ownership,
+    verify_scan_belongs_to_repository,
+    verify_verification_run_belongs_to_repository,
+)
 from ....db.session import get_db
 from ....evidence.schemas import (
     EvidenceIntegrityResponse,
@@ -63,7 +71,31 @@ def create_evidence(
     db: Session = Depends(get_db),
 ):
     verify_repository_ownership(repo_id=evidence_in.repository_id, current_user=current_user, db=db)
-    
+
+    # Enforce strict cross-tenant & cross-repository ownership on all optional foreign keys (SEC-14)
+    if evidence_in.scan_id:
+        verify_scan_belongs_to_repository(
+            scan_id=evidence_in.scan_id,
+            repo_id=evidence_in.repository_id,
+            current_user=current_user,
+            db=db,
+        )
+    if evidence_in.finding_id:
+        verify_finding_belongs_to_repository(
+            finding_id=evidence_in.finding_id,
+            repo_id=evidence_in.repository_id,
+            current_user=current_user,
+            db=db,
+        )
+    if evidence_in.verification_run_id:
+        verify_verification_run_belongs_to_repository(
+            run_id=evidence_in.verification_run_id,
+            repo_id=evidence_in.repository_id,
+            current_user=current_user,
+            db=db,
+            finding_id=evidence_in.finding_id,
+        )
+
     evidence = record_security_evidence(
         db=db,
         repository_id=evidence_in.repository_id,
@@ -136,13 +168,21 @@ def download_findings_report(
         metadata={"format": report_format.value},
     )
 
-    ext = "json" if report_format == ReportExportFormat.JSON else "md"
-    media_type = "application/json; charset=utf-8" if report_format == ReportExportFormat.JSON else "text/markdown; charset=utf-8"
-    
+    if report_format == ReportExportFormat.SARIF:
+        ext = "sarif"
+        media_type = "application/sarif+json; charset=utf-8"
+    elif report_format == ReportExportFormat.JSON:
+        ext = "json"
+        media_type = "application/json; charset=utf-8"
+    else:
+        ext = "md"
+        media_type = "text/markdown; charset=utf-8"
+
+    safe_repo_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(repo_id))
     return Response(
         content=report.content,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="findings_report_{repo_id}.{ext}"'},
+        headers={"Content-Disposition": f'attachment; filename="findings_report_{safe_repo_id}.{ext}"'},
     )
 
 
