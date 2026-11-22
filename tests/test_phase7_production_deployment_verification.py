@@ -592,6 +592,100 @@ def _find_chromium_executable() -> Optional[str]:
     return None
 
 
+def _terminate_chromium_process(chrome_proc: Optional[subprocess.Popen]) -> None:
+    """Terminate a launched Chromium test subprocess cleanly and idempotently."""
+    if chrome_proc is None:
+        return
+    if chrome_proc.poll() is None:
+        try:
+            chrome_proc.terminate()
+            chrome_proc.wait(timeout=5)
+        except Exception:
+            try:
+                chrome_proc.kill()
+                chrome_proc.wait(timeout=2)
+            except Exception:
+                pass
+
+
+def _launch_headless_chromium_cdp(
+    chrome_bin: str,
+    cdp_port: int,
+    user_data_dir: Path,
+    target_url: str,
+    stderr_path: Path,
+) -> Tuple[subprocess.Popen, Optional[str], str]:
+    """Launch headless Chromium with CDP enabled, handling GitHub Actions Linux AppArmor userns limits."""
+    base_flags = [
+        chrome_bin,
+        "--headless=new",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        f"--remote-debugging-port={cdp_port}",
+    ]
+    if sys.platform.startswith("linux"):
+        base_flags.append("--disable-dev-shm-usage")
+
+    flag_attempts: List[List[str]] = [[]]
+    is_github_actions_linux = (
+        sys.platform.startswith("linux")
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+    )
+    if is_github_actions_linux:
+        # Ubuntu 24.04+/26.04 GitHub Actions runners restrict unprivileged userns via AppArmor,
+        # which can abort headless Chromium startup unless --no-sandbox is supplied for this disposable localhost test.
+        flag_attempts.append(["--no-sandbox", "--disable-setuid-sandbox"])
+
+    last_stderr = ""
+    chrome_proc: Optional[subprocess.Popen] = None
+    for attempt_idx, extra_flags in enumerate(flag_attempts):
+        attempt_profile = user_data_dir / f"attempt_{attempt_idx}"
+        attempt_profile.mkdir(parents=True, exist_ok=True)
+        cmd = base_flags + extra_flags + [f"--user-data-dir={attempt_profile}", target_url]
+
+        with open(stderr_path, "w", encoding="utf-8", errors="replace") as stderr_fh:
+            chrome_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_fh,
+            )
+
+        ws_url = None
+        for _ in range(60):
+            if chrome_proc.poll() is not None:
+                break
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list", timeout=1) as r:
+                    targets = json.loads(r.read().decode("utf-8"))
+                    page_targets = [t for t in targets if t.get("type") == "page" and "webSocketDebuggerUrl" in t]
+                    if page_targets:
+                        ws_url = page_targets[0]["webSocketDebuggerUrl"]
+                        break
+            except Exception:
+                time.sleep(0.2)
+
+        if ws_url is not None:
+            try:
+                last_stderr = stderr_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+            except OSError:
+                last_stderr = ""
+            return chrome_proc, ws_url, last_stderr
+
+        _terminate_chromium_process(chrome_proc)
+        try:
+            last_stderr = stderr_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+        except OSError:
+            last_stderr = ""
+
+        if attempt_idx + 1 < len(flag_attempts):
+            time.sleep(0.1)
+
+    assert chrome_proc is not None
+    return chrome_proc, None, last_stderr
+
+
 def test_phase7_sec6_real_chromium_browser_auth_cookies_csrf_rotation_and_cors(tmp_path: Path):
     """[LIVE CHROMIUM BROWSER] Drives real headless Chromium via Chrome DevTools Protocol against a live FastAPI server to verify HttpOnly cookies, rotation, reuse detection, CSRF, CORS, and zero localStorage JWTs."""
     import uvicorn
@@ -624,36 +718,21 @@ def test_phase7_sec6_real_chromium_browser_auth_cookies_csrf_rotation_and_cors(t
 
     user_data_dir = tmp_path / "chrome_profile"
     user_data_dir.mkdir(parents=True, exist_ok=True)
-    chrome_proc = subprocess.Popen(
-        [
-            chrome_bin,
-            "--headless=new",
-            "--disable-gpu",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-extensions",
-            f"--remote-debugging-port={cdp_port}",
-            f"--user-data-dir={user_data_dir}",
-            f"{base_url}/live",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    chrome_stderr_path = tmp_path / "chrome_stderr.log"
+    chrome_proc, ws_url, chrome_stderr = _launch_headless_chromium_cdp(
+        chrome_bin=chrome_bin,
+        cdp_port=cdp_port,
+        user_data_dir=user_data_dir,
+        target_url=f"{base_url}/live",
+        stderr_path=chrome_stderr_path,
     )
 
     script_file = tmp_path / "_cdp_browser_verify.mjs"
     try:
-        ws_url = None
-        for _ in range(40):
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{cdp_port}/json/list", timeout=1) as r:
-                    targets = json.loads(r.read().decode("utf-8"))
-                    page_targets = [t for t in targets if t.get("type") == "page" and "webSocketDebuggerUrl" in t]
-                    if page_targets:
-                        ws_url = page_targets[0]["webSocketDebuggerUrl"]
-                        break
-            except Exception:
-                time.sleep(0.15)
-        assert ws_url is not None, "Failed to connect to headless Chromium CDP endpoint"
+        assert ws_url is not None, (
+            f"Failed to connect to headless Chromium CDP endpoint "
+            f"(exit={chrome_proc.poll()}, stderr={chrome_stderr!r})"
+        )
 
         cdp_script = f"""
 const WS_URL = {json.dumps(ws_url)};
@@ -841,15 +920,279 @@ try {{
             server_thread.join(timeout=3.0)
         except Exception:
             pass
-        try:
-            chrome_proc.terminate()
-            chrome_proc.wait(timeout=5)
-        except Exception:
-            try:
-                chrome_proc.kill()
-            except Exception:
-                pass
+        _terminate_chromium_process(chrome_proc)
         script_file.unlink(missing_ok=True)
+        try:
+            chrome_stderr_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        shutil.rmtree(user_data_dir, ignore_errors=True)
+
+
+def _mock_cdp_success_response(ws_url: str):
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                [{"type": "page", "webSocketDebuggerUrl": ws_url}]
+            ).encode("utf-8")
+
+    return _Resp()
+
+
+def test_phase7_sec6_chromium_fallback_allowed_only_on_github_actions_linux(
+    tmp_path: Path, monkeypatch
+):
+    """Verify Linux + GITHUB_ACTIONS=true attempts sandboxed launch first and falls back once on startup failure."""
+    seen_cmds: List[List[str]] = []
+    procs: List[Any] = []
+
+    class _FakeProc:
+        def __init__(self, initial_rc: Optional[int]):
+            self.rc = initial_rc
+            self.terminated = False
+
+        def poll(self) -> Optional[int]:
+            return self.rc
+
+        def terminate(self) -> None:
+            self.terminated = True
+            if self.rc is None:
+                self.rc = -15
+
+        def wait(self, timeout: Optional[float] = None) -> int:
+            return 0 if self.rc is None else self.rc
+
+        def kill(self) -> None:
+            self.rc = -9
+
+    def _fake_popen(cmd, stdout=None, stderr=None):
+        seen_cmds.append(cmd)
+        if "--no-sandbox" in cmd:
+            p = _FakeProc(None)
+        else:
+            stderr.write("FATAL:zygote_host_impl_linux.cc: No usable sandbox!\n")
+            stderr.flush()
+            p = _FakeProc(133)
+        procs.append(p)
+        return p
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **kw: _mock_cdp_success_response("ws://127.0.0.1:9222/devtools/page/fallback"),
+    )
+
+    profile_root = tmp_path / "chrome_profile"
+    stderr_path = tmp_path / "chrome_stderr.log"
+    proc, ws_url, _ = _launch_headless_chromium_cdp(
+        chrome_bin="/usr/bin/google-chrome",
+        cdp_port=9222,
+        user_data_dir=profile_root,
+        target_url="http://127.0.0.1:8000/live",
+        stderr_path=stderr_path,
+    )
+
+    assert ws_url == "ws://127.0.0.1:9222/devtools/page/fallback"
+    assert proc is procs[1]
+    assert len(seen_cmds) == 2
+    assert "--disable-dev-shm-usage" in seen_cmds[0]
+    assert "--no-sandbox" not in seen_cmds[0]
+    assert "--disable-setuid-sandbox" not in seen_cmds[0]
+    assert "--no-sandbox" in seen_cmds[1]
+    assert "--disable-setuid-sandbox" in seen_cmds[1]
+    # Fresh isolated profile directory per attempt
+    assert [a for a in seen_cmds[0] if a.startswith("--user-data-dir=")] != [
+        a for a in seen_cmds[1] if a.startswith("--user-data-dir=")
+    ]
+    assert procs[0].poll() == 133
+
+
+@pytest.mark.parametrize(
+    ("platform_val", "env_overrides"),
+    [
+        ("linux", {"CI": "true"}),
+        ("linux", {}),
+        ("win32", {"GITHUB_ACTIONS": "true", "CI": "true"}),
+        ("darwin", {"GITHUB_ACTIONS": "true", "CI": "true"}),
+    ],
+)
+def test_phase7_sec6_chromium_fallback_prohibited_outside_github_actions_linux(
+    platform_val: str,
+    env_overrides: Dict[str, str],
+    tmp_path: Path,
+    monkeypatch,
+):
+    """Verify --no-sandbox fallback is prohibited for generic CI=true, local Linux, Windows, and macOS."""
+    seen_cmds: List[List[str]] = []
+    procs: List[Any] = []
+
+    class _FailProc:
+        def __init__(self):
+            self.rc: Optional[int] = None
+            self.terminated = False
+
+        def poll(self) -> Optional[int]:
+            return self.rc
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.rc = -15
+
+        def wait(self, timeout: Optional[float] = None) -> int:
+            return -15
+
+        def kill(self) -> None:
+            self.rc = -9
+
+    def _fake_popen(cmd, stdout=None, stderr=None):
+        seen_cmds.append(cmd)
+        stderr.write(f"startup failed on {platform_val}\n")
+        stderr.flush()
+        p = _FailProc()
+        procs.append(p)
+        return p
+
+    monkeypatch.setattr(sys, "platform", platform_val)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    for k, v in env_overrides.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: (_ for _ in ()).throw(OSError("no cdp")))
+
+    _, ws_url, stderr_txt = _launch_headless_chromium_cdp(
+        chrome_bin="chromium",
+        cdp_port=9222,
+        user_data_dir=tmp_path / "chrome_profile",
+        target_url="http://127.0.0.1:8000/live",
+        stderr_path=tmp_path / "chrome_stderr.log",
+    )
+
+    assert ws_url is None
+    assert len(seen_cmds) == 1
+    assert "--no-sandbox" not in seen_cmds[0]
+    assert "--disable-setuid-sandbox" not in seen_cmds[0]
+    if not platform_val.startswith("linux"):
+        assert "--disable-dev-shm-usage" not in seen_cmds[0]
+    assert procs[0].terminated is True
+    assert f"startup failed on {platform_val}" in stderr_txt
+
+
+def test_phase7_sec6_chromium_successful_sandbox_launch_skips_fallback(
+    tmp_path: Path, monkeypatch
+):
+    """Verify successful sandboxed Chromium startup never invokes the fallback attempt."""
+    seen_cmds: List[List[str]] = []
+
+    class _OkProc:
+        def poll(self) -> Optional[int]:
+            return None
+
+        def terminate(self) -> None:
+            pass
+
+        def wait(self, timeout: Optional[float] = None) -> int:
+            return 0
+
+    def _fake_popen(cmd, stdout=None, stderr=None):
+        seen_cmds.append(cmd)
+        return _OkProc()
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **kw: _mock_cdp_success_response("ws://127.0.0.1:9222/devtools/page/sandbox-ok"),
+    )
+
+    _, ws_url, _ = _launch_headless_chromium_cdp(
+        chrome_bin="/usr/bin/google-chrome",
+        cdp_port=9222,
+        user_data_dir=tmp_path / "chrome_profile",
+        target_url="http://127.0.0.1:8000/live",
+        stderr_path=tmp_path / "chrome_stderr.log",
+    )
+
+    assert ws_url == "ws://127.0.0.1:9222/devtools/page/sandbox-ok"
+    assert len(seen_cmds) == 1
+    assert "--no-sandbox" not in seen_cmds[0]
+    assert "--disable-setuid-sandbox" not in seen_cmds[0]
+
+
+def test_phase7_sec6_chromium_failed_fallback_cleans_up_and_preserves_diagnostics(
+    tmp_path: Path, monkeypatch
+):
+    """Verify bounded polling, process termination cleanup, and stderr diagnostics when both attempts fail."""
+    seen_cmds: List[List[str]] = []
+    procs: List[Any] = []
+    sleep_calls: List[float] = []
+
+    class _HangingProc:
+        def __init__(self):
+            self.rc: Optional[int] = None
+            self.terminated = False
+
+        def poll(self) -> Optional[int]:
+            return self.rc
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.rc = -15
+
+        def wait(self, timeout: Optional[float] = None) -> int:
+            return -15
+
+        def kill(self) -> None:
+            self.rc = -9
+
+    def _fake_popen(cmd, stdout=None, stderr=None):
+        seen_cmds.append(cmd)
+        tag = "fallback_err" if "--no-sandbox" in cmd else "sandbox_err"
+        stderr.write(f"{tag}: failed to open CDP\n")
+        stderr.flush()
+        p = _HangingProc()
+        procs.append(p)
+        return p
+
+    def _fake_urlopen(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setattr(time, "sleep", lambda d: sleep_calls.append(d))
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    proc, ws_url, stderr_txt = _launch_headless_chromium_cdp(
+        chrome_bin="/usr/bin/google-chrome",
+        cdp_port=9222,
+        user_data_dir=tmp_path / "chrome_profile",
+        target_url="http://127.0.0.1:8000/live",
+        stderr_path=tmp_path / "chrome_stderr.log",
+    )
+
+    assert ws_url is None
+    assert len(seen_cmds) == 2
+    assert procs[0].terminated is True
+    assert procs[1].terminated is True
+    assert proc.poll() == -15
+    assert len(sleep_calls) == 121  # 60 polls * 2 attempts + 1 inter-attempt pause
+    assert "fallback_err: failed to open CDP" in stderr_txt
 
 
 # ==============================================================================

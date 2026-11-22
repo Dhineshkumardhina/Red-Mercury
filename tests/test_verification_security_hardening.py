@@ -512,10 +512,16 @@ def test_ensure_sandbox_readable_workspace_uses_scoped_acl_without_world_access(
         assert attr == "system.posix_acl_access"
         xattr_calls.append((Path(path), value))
 
+    orig_chmod = os.chmod
+
+    def _spy_chmod(path, mode):
+        chmod_calls.append((Path(path), mode))
+        orig_chmod(path, mode)
+
     with patch("platform.system", return_value="Linux"), \
          patch("app.verification.workspace.os.getuid", return_value=1001, create=True), \
          patch("app.verification.workspace.os.setxattr", side_effect=_fake_setxattr, create=True), \
-         patch("app.verification.workspace.os.chmod", side_effect=lambda p, m: chmod_calls.append((Path(p), m))):
+         patch("app.verification.workspace.os.chmod", side_effect=_spy_chmod):
         ensure_sandbox_readable_workspace(ws, sandbox_uid=10002)
 
     assert len(chmod_calls) >= 3
