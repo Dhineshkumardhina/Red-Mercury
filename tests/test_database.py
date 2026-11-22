@@ -162,3 +162,34 @@ def test_audit_event_logging(db_session: Session):
     assert fetched is not None
     assert fetched.actor.email == user.email
     assert fetched.action == "REPOSITORY_DELETED"
+
+
+def test_disposable_test_db_url_validation():
+    """Verify fail-closed guard rejects non-test, development, production, and PostgreSQL URLs."""
+    import pytest
+    from tests.conftest import validate_disposable_test_db_url
+
+    # 1. Expected disposable SQLite test URL is accepted
+    validate_disposable_test_db_url("sqlite:///./test_redmercury.db", app_env="development")
+
+    # 2. Production URL and production/staging APP_ENV are rejected
+    with pytest.raises(RuntimeError):
+        validate_disposable_test_db_url(
+            "postgresql+psycopg://redmercury_admin:secret@prod-db:5432/redmercury_prod",
+            app_env="production",
+        )
+    with pytest.raises(RuntimeError):
+        validate_disposable_test_db_url("sqlite:///./test_redmercury.db", app_env="production")
+    with pytest.raises(RuntimeError):
+        validate_disposable_test_db_url("sqlite:///./test_redmercury.db", app_env="staging")
+
+    # 3. Development SQLite URL is rejected
+    with pytest.raises(RuntimeError):
+        validate_disposable_test_db_url("sqlite:///./redmercury.db", app_env="development")
+
+    # 4. Unexpected PostgreSQL URL (even pointed at local test DB) is rejected
+    with pytest.raises(RuntimeError):
+        validate_disposable_test_db_url(
+            "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/test_redmercury",
+            app_env="development",
+        )

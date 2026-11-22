@@ -158,9 +158,13 @@ def test_expired_token_returns_401(client: TestClient, create_test_user):
 def test_logout_clears_cookie(client: TestClient):
     email = "logout_test@xerova.com"
     password = "ValidPassword1234!"
-    client.post("/api/v1/auth/register", json={"email": email, "password": password})
+    reg_res = client.post("/api/v1/auth/register", json={"email": email, "password": password})
+    csrf_tok = reg_res.cookies.get(settings.CSRF_COOKIE_NAME)
 
-    logout_res = client.post("/api/v1/auth/logout")
+    logout_res = client.post(
+        "/api/v1/auth/logout",
+        headers={"Origin": "http://localhost:5173", "X-CSRF-Token": csrf_tok or ""},
+    )
     assert logout_res.status_code == 200
     assert logout_res.json()["success"] is True
 

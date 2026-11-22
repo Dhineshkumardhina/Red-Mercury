@@ -40,8 +40,8 @@ from app.scanner.runner import run_security_scan
 
 def test_viewer_and_auditor_prohibited_from_evidence_creation(client: TestClient, create_test_user, db_session: Session):
     """Viewer and auditor roles must receive 403 Forbidden when attempting to record evidence."""
-    viewer = create_test_user(email=f"viewer_ev_{uuid.uuid4().hex[:6]}@xerova.com")
-    auditor = create_test_user(email=f"auditor_ev_{uuid.uuid4().hex[:6]}@xerova.com")
+    viewer = create_test_user(email=f"viewer_ev_{uuid.uuid4().hex[:6]}@xerova.com", role="viewer")
+    auditor = create_test_user(email=f"auditor_ev_{uuid.uuid4().hex[:6]}@xerova.com", role="auditor")
 
     v_token = create_access_token({"sub": viewer.id, "email": viewer.email, "role": "viewer"})
     a_token = create_access_token({"sub": auditor.id, "email": auditor.email, "role": "auditor"})
@@ -74,7 +74,7 @@ def test_viewer_and_auditor_prohibited_from_evidence_creation(client: TestClient
 
 def test_viewer_and_auditor_prohibited_from_verification_rerun(client: TestClient, create_test_user, db_session: Session):
     """Viewer and auditor roles must receive 403 Forbidden when attempting to rerun fix verification."""
-    viewer = create_test_user(email=f"viewer_vr_{uuid.uuid4().hex[:6]}@xerova.com")
+    viewer = create_test_user(email=f"viewer_vr_{uuid.uuid4().hex[:6]}@xerova.com", role="viewer")
     v_token = create_access_token({"sub": viewer.id, "email": viewer.email, "role": "viewer"})
 
     repo = Repository(id=f"repo_vr_{uuid.uuid4().hex[:6]}", owner_id=viewer.id, name="vr-repo", default_branch="main")
@@ -100,7 +100,7 @@ def test_viewer_and_auditor_prohibited_from_verification_rerun(client: TestClien
 
 def test_viewer_and_auditor_prohibited_from_integrations_mutations(client: TestClient, create_test_user):
     """Viewer and auditor roles must receive 403 Forbidden on GitHub integrations mutating endpoints."""
-    auditor = create_test_user(email=f"auditor_int_{uuid.uuid4().hex[:6]}@xerova.com")
+    auditor = create_test_user(email=f"auditor_int_{uuid.uuid4().hex[:6]}@xerova.com", role="auditor")
     a_token = create_access_token({"sub": auditor.id, "email": auditor.email, "role": "auditor"})
     headers = {"Authorization": f"Bearer {a_token}"}
 

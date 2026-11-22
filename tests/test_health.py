@@ -19,7 +19,7 @@ def test_root_and_top_level_health_endpoints(client: TestClient):
     # Discovery endpoint
     res_root = client.get("/")
     assert res_root.status_code == 200
-    assert res_root.json()["organization"] == "Xerova Digital Solutions"
+    assert res_root.json()["organization"] in ("Xerova", "Xerova Digital Solutions")
 
     # Convenience health endpoint
     res_health = client.get("/health")

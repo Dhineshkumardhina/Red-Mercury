@@ -181,8 +181,7 @@ def test_rbac_viewer_blocked_from_mutating_actions(client: TestClient, create_te
     2. Viewer attempting mutating actions (DELETE repository, POST scans, POST ingest) MUST be rejected with 403 Forbidden.
     3. The application does not silently accept mutations without checking the actor's role.
     """
-    viewer_user = create_test_user(email=f"viewer_{uuid.uuid4().hex[:6]}@xerova.com")
-    # Issue a token with explicit viewer role claim
+    viewer_user = create_test_user(email=f"viewer_{uuid.uuid4().hex[:6]}@xerova.com", role="viewer")
     viewer_token = create_access_token({"sub": viewer_user.id, "email": viewer_user.email, "role": "viewer"})
     viewer_client = TestClient(app)
     viewer_client.headers["Authorization"] = f"Bearer {viewer_token}"
@@ -288,17 +287,17 @@ def test_rbac_role_vs_endpoint_matrix(client: TestClient, create_test_user, db_s
     """
     from app.models.repository import Repository
 
-    viewer_user = create_test_user(email=f"matrix_viewer_{uuid.uuid4().hex[:6]}@xerova.com")
+    viewer_user = create_test_user(email=f"matrix_viewer_{uuid.uuid4().hex[:6]}@xerova.com", role="viewer")
     viewer_token = create_access_token({"sub": viewer_user.id, "email": viewer_user.email, "role": "viewer"})
     viewer_client = TestClient(app)
     viewer_client.headers["Authorization"] = f"Bearer {viewer_token}"
 
-    auditor_user = create_test_user(email=f"matrix_auditor_{uuid.uuid4().hex[:6]}@xerova.com")
+    auditor_user = create_test_user(email=f"matrix_auditor_{uuid.uuid4().hex[:6]}@xerova.com", role="auditor")
     auditor_token = create_access_token({"sub": auditor_user.id, "email": auditor_user.email, "role": "auditor"})
     auditor_client = TestClient(app)
     auditor_client.headers["Authorization"] = f"Bearer {auditor_token}"
 
-    admin_user = create_test_user(email=f"matrix_admin_{uuid.uuid4().hex[:6]}@xerova.com")
+    admin_user = create_test_user(email=f"matrix_admin_{uuid.uuid4().hex[:6]}@xerova.com", role="admin")
     admin_token = create_access_token({"sub": admin_user.id, "email": admin_user.email, "role": "admin"})
     admin_client = TestClient(app)
     admin_client.headers["Authorization"] = f"Bearer {admin_token}"

@@ -20,7 +20,7 @@ def test_migration_chain_is_strictly_linear():
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
     assert len(heads) == 1, f"Expected exactly 1 migration head, found {len(heads)}: {heads}"
-    assert heads[0] == "0012_add_revoked_tokens_and_user_role", f"Expected head to be 0012_add_revoked_tokens_and_user_role, got {heads[0]}"
+    assert heads[0] == "0014_add_durable_jobs_and_outbox", f"Expected head to be 0014_add_durable_jobs_and_outbox, got {heads[0]}"
 
     # Verify linear revision sequence from 0001 to 0011
     revisions = []
@@ -43,6 +43,8 @@ def test_migration_chain_is_strictly_linear():
         curr = script.get_revision(curr.down_revision)
     
     expected_chain = [
+        "0014_add_durable_jobs_and_outbox",
+        "0013_add_refresh_token_sessions",
         "0012_add_revoked_tokens_and_user_role",
         "0011_sync_model_constraints",
         "0010_make_patch_proposal_id_nullable",

@@ -6,6 +6,7 @@ import pytest
 from typing import Generator
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker, Session
 
 # Add backend directory to sys.path
@@ -29,11 +30,43 @@ test_engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread"
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 
+def validate_disposable_test_db_url(url: str, app_env: str = "development") -> None:
+    """Fail-closed guard ensuring destructive drop_all() only runs on the disposable SQLite test DB."""
+    env_normalized = (app_env or "").strip().lower()
+    if env_normalized in ("production", "staging"):
+        raise RuntimeError(f"Refusing destructive test DB reset under APP_ENV={app_env!r}.")
+    if not url or not isinstance(url, str):
+        raise RuntimeError("Refusing destructive test DB reset: empty database URL.")
+
+    parsed = make_url(url)
+    if not parsed.drivername.startswith("sqlite"):
+        raise RuntimeError(
+            f"Refusing destructive test DB reset on non-SQLite dialect {parsed.drivername!r}."
+        )
+
+    db_path = (parsed.database or "").strip().replace("\\", "/")
+    normalized_name = os.path.basename(db_path)
+    if normalized_name != "test_redmercury.db" or db_path not in ("./test_redmercury.db", "test_redmercury.db"):
+        raise RuntimeError(
+            f"Refusing destructive test DB reset on unexpected SQLite path {db_path!r}; "
+            "expected './test_redmercury.db'."
+        )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db():
     """Create test tables before tests, drop them after test session."""
+    validate_disposable_test_db_url(
+        test_engine.url.render_as_string(hide_password=False),
+        os.environ.get("APP_ENV", "development"),
+    )
+    Base.metadata.drop_all(bind=test_engine)
     Base.metadata.create_all(bind=test_engine)
     yield
+    validate_disposable_test_db_url(
+        test_engine.url.render_as_string(hide_password=False),
+        os.environ.get("APP_ENV", "development"),
+    )
     Base.metadata.drop_all(bind=test_engine)
     test_engine.dispose()
     try:
@@ -80,12 +113,18 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
 @pytest.fixture
 def create_test_user(db_session: Session):
     """Factory fixture to create test users with active accounts."""
-    def _create_user(email: str = None, password: str = "P@ssword1234!", status: str = "active") -> User:
+    def _create_user(
+        email: str = None,
+        password: str = "P@ssword1234!",
+        status: str = "active",
+        role: str = "analyst",
+    ) -> User:
         user_email = email or f"user_{uuid.uuid4().hex[:8]}@xerova.com"
         user = User(
             email=user_email,
             password_hash=hash_password(password),
             account_status=status,
+            role=role,
         )
         db_session.add(user)
         db_session.commit()

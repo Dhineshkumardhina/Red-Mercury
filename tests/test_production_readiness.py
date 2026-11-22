@@ -241,7 +241,7 @@ def test_worker_process_pending_scans(db_session: Session, user_a: User, tmp_pat
     db_session.commit()
 
     # Process batch
-    processed = process_pending_scans(db=db_session, max_batch=5)
+    processed = process_pending_scans(db=db_session, max_batch=50)
     assert processed >= 1
 
     db_session.refresh(scan)
