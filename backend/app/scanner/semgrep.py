@@ -15,7 +15,9 @@ from .base import (
     ScannerStatus,
     get_scanner_env,
     resolve_tool_binary,
+    run_scanner_subprocess,
 )
+from ..core.config import settings
 from ..core.logging import get_logger
 
 logger = get_logger("redmercury.scanner.semgrep")
@@ -26,6 +28,8 @@ SEMGREP_SEVERITY_MAP = {
     "INFO": "LOW",
 }
 
+_LOCAL_DEFAULT_RULESET = Path(__file__).resolve().parent / "rules" / "redmercury_default.yml"
+
 
 class SemgrepScannerAdapter(BaseScannerAdapter):
     """Adapter for Semgrep OSS static code analysis engine."""
@@ -33,8 +37,14 @@ class SemgrepScannerAdapter(BaseScannerAdapter):
     name: str = "semgrep"
     display_name: str = "Semgrep OSS"
     category: str = "sast"
+    _cached_cmd: Optional[List[str]] = None
+    _cached_checked: bool = False
+    _cached_version: Optional[str] = None
 
     def _get_executable_cmd(self) -> Optional[List[str]]:
+        if SemgrepScannerAdapter._cached_checked:
+            return SemgrepScannerAdapter._cached_cmd
+
         semgrep_bin = resolve_tool_binary("semgrep")
         if semgrep_bin:
             try:
@@ -44,18 +54,25 @@ class SemgrepScannerAdapter(BaseScannerAdapter):
                     stderr=subprocess.PIPE,
                     text=True,
                     env=get_scanner_env(),
-                    timeout=15,
+                    timeout=10,
                 )
                 if res.returncode == 0:
-                    return [semgrep_bin]
+                    SemgrepScannerAdapter._cached_cmd = [semgrep_bin]
+                    SemgrepScannerAdapter._cached_version = res.stdout.strip()
+                    SemgrepScannerAdapter._cached_checked = True
+                    return SemgrepScannerAdapter._cached_cmd
             except Exception:
                 pass
 
         # Check if Python module exists before spawning python -m semgrep
         try:
             if importlib.util.find_spec("semgrep") is None:
+                SemgrepScannerAdapter._cached_cmd = None
+                SemgrepScannerAdapter._cached_checked = True
                 return None
         except Exception:
+            SemgrepScannerAdapter._cached_cmd = None
+            SemgrepScannerAdapter._cached_checked = True
             return None
 
         try:
@@ -65,12 +82,18 @@ class SemgrepScannerAdapter(BaseScannerAdapter):
                 stderr=subprocess.PIPE,
                 text=True,
                 env=get_scanner_env(),
-                timeout=15,
+                timeout=10,
             )
             if res.returncode == 0:
-                return [sys.executable, "-m", "semgrep"]
+                SemgrepScannerAdapter._cached_cmd = [sys.executable, "-m", "semgrep"]
+                SemgrepScannerAdapter._cached_version = res.stdout.strip()
+                SemgrepScannerAdapter._cached_checked = True
+                return SemgrepScannerAdapter._cached_cmd
         except Exception:
             pass
+
+        SemgrepScannerAdapter._cached_cmd = None
+        SemgrepScannerAdapter._cached_checked = True
         return None
 
     def is_available(self) -> bool:
@@ -84,16 +107,19 @@ class SemgrepScannerAdapter(BaseScannerAdapter):
             cmd = self._get_executable_cmd()
             if not cmd:
                 return None
+            if SemgrepScannerAdapter._cached_version:
+                return SemgrepScannerAdapter._cached_version
             res = subprocess.run(
                 cmd + ["--version"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 env=get_scanner_env(),
-                timeout=15,
+                timeout=10,
             )
             if res.returncode == 0:
-                return res.stdout.strip()
+                SemgrepScannerAdapter._cached_version = res.stdout.strip()
+                return SemgrepScannerAdapter._cached_version
             return None
         except Exception:
             return None
@@ -128,7 +154,9 @@ class SemgrepScannerAdapter(BaseScannerAdapter):
         start_time = time.perf_counter()
         version_str = self.get_version()
         config_ruleset = (options or {}).get("config", "p/default")
-        if config_ruleset == "auto":
+        if config_ruleset in ("auto", "p/default") and settings.OFFLINE_MODE and _LOCAL_DEFAULT_RULESET.exists():
+            config_ruleset = str(_LOCAL_DEFAULT_RULESET)
+        elif config_ruleset == "auto":
             config_ruleset = "p/default"
 
         args = cmd_base + [
@@ -141,15 +169,11 @@ class SemgrepScannerAdapter(BaseScannerAdapter):
         ]
 
         try:
-            result = subprocess.run(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+            result = run_scanner_subprocess(
+                args=args,
                 env=get_scanner_env(),
-                timeout=timeout_seconds,
+                timeout_seconds=timeout_seconds,
+                scan_id=scan_id,
             )
             duration = round(time.perf_counter() - start_time, 2)
 

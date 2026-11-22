@@ -14,6 +14,7 @@ from .base import (
     ScannerStatus,
     get_scanner_env,
     resolve_tool_binary,
+    run_scanner_subprocess,
 )
 from ..core.config import settings
 from ..core.logging import get_logger
@@ -118,15 +119,11 @@ class PipAuditScannerAdapter(BaseScannerAdapter):
             args = cmd_base + ["-f", "json", "--no-deps", "--disable-pip", "-r", str(manifest.resolve())]
 
             try:
-                res = subprocess.run(
-                    args,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
+                res = run_scanner_subprocess(
+                    args=args,
                     env=get_scanner_env(),
-                    timeout=min(5, timeout_seconds) if settings.OFFLINE_MODE else timeout_seconds,
+                    timeout_seconds=min(5, timeout_seconds) if settings.OFFLINE_MODE else timeout_seconds,
+                    scan_id=scan_id,
                 )
 
                 # If --no-deps failed due to unpinned dependencies, skip dynamic pip resolver to prevent arbitrary code execution via setup.py

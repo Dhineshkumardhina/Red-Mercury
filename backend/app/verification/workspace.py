@@ -224,6 +224,13 @@ def create_verification_workspace(
     """
     temp_dir = tempfile.TemporaryDirectory(prefix="redmercury_verify_")
     workspace_path = Path(temp_dir.name).resolve()
+    try:
+        from ..core.jobs import get_active_tracker
+        tracker = get_active_tracker()
+        if tracker is not None:
+            tracker.register_temp_workspace(workspace_path)
+    except Exception:
+        pass
 
     if source_dir and source_dir.exists() and source_dir.is_dir():
         safe_copy_source_tree(source_dir=source_dir, workspace_path=workspace_path)

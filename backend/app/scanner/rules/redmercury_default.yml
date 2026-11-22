@@ -1,0 +1,54 @@
+rules:
+  - id: redmercury.python.sql-injection-formatted
+    patterns:
+      - pattern-either:
+          - pattern: $CURSOR.execute(f"...", ...)
+          - pattern: $CURSOR.execute("..." % ..., ...)
+          - pattern: $CURSOR.execute("..." + ..., ...)
+          - pattern: $CURSOR.execute("...".format(...), ...)
+    message: "Detected dynamic SQL query construction vulnerable to SQL Injection (CWE-89)."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe:
+        - "CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"
+
+  - id: redmercury.python.os-command-injection
+    patterns:
+      - pattern-either:
+          - pattern: os.system(...)
+          - pattern: os.popen(...)
+          - pattern: subprocess.run(..., shell=True, ...)
+          - pattern: subprocess.Popen(..., shell=True, ...)
+          - pattern: subprocess.call(..., shell=True, ...)
+    message: "Detected shell command execution vulnerable to OS Command Injection (CWE-78)."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe:
+        - "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+
+  - id: redmercury.python.code-injection-eval-exec
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: exec(...)
+    message: "Detected dynamic code evaluation via eval/exec (CWE-94)."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe:
+        - "CWE-94: Improper Control of Generation of Code ('Code Injection')"
+
+  - id: redmercury.python.insecure-deserialization
+    patterns:
+      - pattern-either:
+          - pattern: pickle.loads(...)
+          - pattern: pickle.load(...)
+          - pattern: yaml.load($DATA)
+    message: "Detected unsafe deserialization of untrusted data (CWE-502)."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe:
+        - "CWE-502: Deserialization of Untrusted Data"

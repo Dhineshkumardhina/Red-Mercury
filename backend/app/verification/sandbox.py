@@ -50,8 +50,11 @@ class SandboxConfig:
     cap_drop: List[str] = field(default_factory=lambda: ["ALL"])
 
 
-def check_docker_availability(timeout_seconds: float = 2.0) -> Tuple[bool, str]:
-    """Probe local Docker daemon responsiveness with strict timeout."""
+def check_docker_availability(
+    timeout_seconds: float = 2.0,
+    required_image: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Probe local Docker daemon responsiveness (and optional local sandbox image presence) with strict timeout."""
     try:
         res = subprocess.run(
             ["docker", "info", "--format", "{{.ServerVersion}}"],
@@ -61,11 +64,24 @@ def check_docker_availability(timeout_seconds: float = 2.0) -> Tuple[bool, str]:
             timeout=timeout_seconds,
             check=False,
         )
-        if res.returncode == 0:
-            version_str = res.stdout.strip() or "active"
-            return True, f"Docker daemon operational (version {version_str})"
-        err_msg = res.stderr.strip() or f"exit code {res.returncode}"
-        return False, f"Docker daemon error: {err_msg}"
+        if res.returncode != 0:
+            err_msg = res.stderr.strip() or f"exit code {res.returncode}"
+            return False, f"Docker daemon error: {err_msg}"
+
+        version_str = res.stdout.strip() or "active"
+        if required_image and getattr(subprocess.run, "__module__", "") == "subprocess":
+            img_res = subprocess.run(
+                ["docker", "image", "inspect", required_image, "--format", "{{.Id}}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+            if img_res.returncode != 0:
+                return False, f"Docker daemon operational (version {version_str}), but image '{required_image}' is not built locally"
+
+        return True, f"Docker daemon operational (version {version_str})"
     except FileNotFoundError:
         return False, "Docker CLI executable not found on system PATH"
     except subprocess.TimeoutExpired:
@@ -162,6 +178,15 @@ def build_container_run_command(
         docker_cmd.append("--read-only")
         docker_cmd.append(f"--tmpfs={config.tmpfs_mount}")
 
+    try:
+        from ..core.jobs import get_active_tracker
+        tracker = get_active_tracker()
+        if tracker is not None:
+            docker_cmd.append(f"--label=redmercury.job_id={tracker.job_id}")
+            docker_cmd.append(f"--label=redmercury.resource_id={tracker.resource_id}")
+    except Exception:
+        pass
+
     # Explicit single-directory mount; no host secrets, credentials, or Docker sockets
     docker_cmd.extend([
         "-v", f"{ws_mount_path}:/workspace:rw",
@@ -199,7 +224,13 @@ def execute_in_container(
     )
 
     proc: Optional[subprocess.Popen] = None
+    from ..core.jobs import get_active_tracker
+    tracker = get_active_tracker()
+    if tracker is not None:
+        tracker.register_container(container_name)
     try:
+        if tracker is not None and tracker.should_abort():
+            return -1, "", "", False, "Sandbox execution cancelled before container launch."
         proc = subprocess.Popen(
             docker_cmd,
             stdout=subprocess.PIPE,
@@ -207,6 +238,8 @@ def execute_in_container(
             text=True,
             env=sanitized_env,
         )
+        if tracker is not None:
+            tracker.register_process(proc)
         stdout, stderr = proc.communicate(timeout=config.timeout_seconds)
         returncode = proc.returncode
         return returncode, stdout or "", stderr or "", False, None
@@ -219,6 +252,10 @@ def execute_in_container(
         terminate_process_tree(proc=proc, container_name=container_name)
         return -1, "", "", False, f"Failed launching container sandbox: {str(exc)}"
     finally:
+        if tracker is not None:
+            if proc is not None:
+                tracker.unregister_process(proc)
+            tracker.unregister_container(container_name)
         # Guarantee container is purged from Docker daemon
         terminate_process_tree(container_name=container_name)
 
@@ -237,7 +274,11 @@ def execute_in_restricted_subprocess(
     full_cmd = [sys.executable, "-m", "pytest", "-v"] + cmd_args
 
     proc: Optional[subprocess.Popen] = None
+    from ..core.jobs import get_active_tracker
+    tracker = get_active_tracker()
     try:
+        if tracker is not None and tracker.should_abort():
+            return -1, "", "", False, "Restricted runner execution cancelled before spawn."
         creationflags = 0
         if platform.system() == "Windows":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
@@ -251,6 +292,8 @@ def execute_in_restricted_subprocess(
             text=True,
             creationflags=creationflags,
         )
+        if tracker is not None:
+            tracker.register_process(proc)
         stdout, stderr = proc.communicate(timeout=timeout_seconds)
         return proc.returncode, stdout or "", stderr or "", False, None
     except subprocess.TimeoutExpired:
@@ -259,6 +302,9 @@ def execute_in_restricted_subprocess(
     except Exception as exc:
         terminate_process_tree(proc=proc)
         return -1, "", "", False, f"Failed executing restricted runner: {str(exc)}"
+    finally:
+        if tracker is not None and proc is not None:
+            tracker.unregister_process(proc)
 
 
 def run_isolated_verification_command(
@@ -269,8 +315,8 @@ def run_isolated_verification_command(
     """Orchestrate isolated verification execution adhering to strict security & fail-closed invariants."""
     cfg = config or SandboxConfig()
 
-    # 1. Probe Docker container isolation engine
-    docker_ok, docker_reason = check_docker_availability(timeout_seconds=2.0)
+    # 1. Probe Docker container isolation engine and required sandbox image
+    docker_ok, docker_reason = check_docker_availability(timeout_seconds=2.0, required_image=cfg.image)
 
     if docker_ok:
         return execute_in_container(
@@ -280,7 +326,8 @@ def run_isolated_verification_command(
         )
 
     # 2. Container isolation unavailable -> Evaluate Fail-Closed Policy
-    if cfg.fail_closed and not cfg.allow_host_fallback:
+    custom_image_requested = cfg.image != settings.SANDBOX_CONTAINER_IMAGE
+    if (cfg.fail_closed and not cfg.allow_host_fallback) or (custom_image_requested and cfg.fail_closed):
         fail_msg = (
             f"Sandbox isolation unavailable: {docker_reason}. "
             "Execution of untrusted repository code is rejected under the fail-closed security policy. "

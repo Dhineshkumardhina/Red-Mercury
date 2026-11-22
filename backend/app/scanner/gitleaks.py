@@ -15,6 +15,7 @@ from .base import (
     get_scanner_env,
     redact_secrets,
     resolve_tool_binary,
+    run_scanner_subprocess,
 )
 from ..core.logging import get_logger
 
@@ -119,15 +120,12 @@ class GitleaksScannerAdapter(BaseScannerAdapter):
                     "--no-banner",
                 ]
 
-            result = subprocess.run(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+            result = run_scanner_subprocess(
+                args=args,
                 env=get_scanner_env(),
-                timeout=timeout_seconds,
+                timeout_seconds=timeout_seconds,
+                scan_id=scan_id,
+                subprocess_mod=subprocess,
             )
             duration = round(time.perf_counter() - start_time, 2)
 

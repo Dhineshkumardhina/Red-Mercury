@@ -47,10 +47,95 @@ from ..schemas.verification import (
 logger = get_logger("redmercury.verification.service")
 
 
+def _serialize_normalized_finding_snapshot(f: Any) -> Dict[str, Any]:
+    """Accurately serialize a NormalizedFinding (or finding dict/ORM object) into a verification snapshot.
+
+    Maps authoritative NormalizedFinding fields (finding_id, scan_id, scanner_name, scanner_rule_id,
+    vulnerability_category, cwe, severity, confidence, file_path, start_line, end_line,
+    scanner_message, evidence_reference, metadata) while preserving backward-compatible keys
+    (rule_id, line_number, message) for existing consumers.
+    """
+    if isinstance(f, dict):
+        rule_val = f.get("scanner_rule_id") or f.get("rule_identifier") or f.get("rule_id") or ""
+        start_val = f.get("start_line") if f.get("start_line") is not None else f.get("line_number")
+        end_val = f.get("end_line") if f.get("end_line") is not None else start_val
+        msg_val = f.get("scanner_message") or f.get("message") or f.get("title") or ""
+        sev_val = (f.get("severity") or "MEDIUM").upper()
+        return {
+            "finding_id": f.get("finding_id") or f.get("id") or "",
+            "scan_id": f.get("scan_id") or "",
+            "scanner_name": f.get("scanner_name") or "unknown",
+            "rule_id": str(rule_val),
+            "scanner_rule_id": str(rule_val),
+            "vulnerability_category": f.get("vulnerability_category") or f.get("category") or "vulnerability",
+            "cwe": f.get("cwe"),
+            "severity": sev_val,
+            "confidence": (f.get("confidence") or "HIGH").upper(),
+            "file_path": f.get("file_path") or "",
+            "line_number": start_val,
+            "start_line": start_val,
+            "end_line": end_val,
+            "message": str(msg_val),
+            "scanner_message": str(msg_val),
+            "evidence_reference": f.get("evidence_reference"),
+            "metadata": dict(f.get("metadata") or {}),
+        }
+
+    rule_val = (
+        getattr(f, "scanner_rule_id", None)
+        or getattr(f, "rule_identifier", None)
+        or getattr(f, "rule_id", None)
+        or ""
+    )
+    start_val = (
+        getattr(f, "start_line", None)
+        if getattr(f, "start_line", None) is not None
+        else getattr(f, "line_number", None)
+    )
+    end_val = (
+        getattr(f, "end_line", None)
+        if getattr(f, "end_line", None) is not None
+        else start_val
+    )
+    msg_val = (
+        getattr(f, "scanner_message", None)
+        or getattr(f, "message", None)
+        or getattr(f, "title", None)
+        or ""
+    )
+    sev_val = (getattr(f, "severity", None) or "MEDIUM").upper()
+    conf_val = (getattr(f, "confidence", None) or "HIGH").upper()
+    raw_meta = getattr(f, "metadata", None)
+    meta_dict = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+
+    return {
+        "finding_id": getattr(f, "finding_id", None) or getattr(f, "id", None) or "",
+        "scan_id": getattr(f, "scan_id", None) or "",
+        "scanner_name": getattr(f, "scanner_name", None) or "unknown",
+        "rule_id": str(rule_val),
+        "scanner_rule_id": str(rule_val),
+        "vulnerability_category": getattr(f, "vulnerability_category", None) or getattr(f, "category", None) or "vulnerability",
+        "cwe": getattr(f, "cwe", None),
+        "severity": sev_val,
+        "confidence": conf_val,
+        "file_path": getattr(f, "file_path", None) or "",
+        "line_number": start_val,
+        "start_line": start_val,
+        "end_line": end_val,
+        "message": str(msg_val),
+        "scanner_message": str(msg_val),
+        "evidence_reference": getattr(f, "evidence_reference", None),
+        "metadata": meta_dict,
+    }
+
+
 def execute_fix_verification(
     request: VerificationRunRequest,
     db: Session,
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    existing_run_id: Optional[str] = None,
+    commit_changes: bool = True,
+    pre_commit_hook: Optional[Any] = None,
 ) -> VerificationRunResponse:
     """Execute the full 5-step fix verification pipeline with regression analysis."""
     started_at = datetime.now(timezone.utc)
@@ -82,6 +167,10 @@ def execute_fix_verification(
     if finding.repo_id:
         repo = db.query(Repository).filter(Repository.id == finding.repo_id).first()
 
+    if repo and user_id and repo.owner_id != user_id:
+        from ..core.errors import ForbiddenError
+        raise ForbiddenError("You do not have permission to verify findings for this repository.")
+
     # Determine base source files
     source_dir: Optional[Path] = None
     synthetic_files: Dict[str, str] = {}
@@ -100,6 +189,10 @@ def execute_fix_verification(
 
     # Create isolated disposable workspace
     ws = create_verification_workspace(source_dir=source_dir, synthetic_files=synthetic_files)
+    from ..core.jobs import get_active_tracker
+    active_tracker = get_active_tracker(existing_run_id) or get_active_tracker()
+    if active_tracker is not None:
+        active_tracker.register_temp_workspace(ws.workspace_dir)
     baseline_hash = ws.baseline_hash
 
     source_revision = getattr(finding, "commit_sha", None) or (repo.default_branch if repo and repo.default_branch else "main")
@@ -127,7 +220,7 @@ def execute_fix_verification(
     original_finding_status = "untested"
     patched_hash: Optional[str] = None
 
-    verification_run_id = f"vr_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    verification_run_id = existing_run_id or f"vr_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
     try:
         # Determine target scanner(s) for fix verification
@@ -157,14 +250,7 @@ def execute_fix_verification(
             execution_errors.extend(base_sc_errs)
 
         findings_before_list = [
-            {
-                "scanner_name": getattr(f, "scanner_name", "unknown"),
-                "rule_id": getattr(f, "rule_id", ""),
-                "file_path": getattr(f, "file_path", ""),
-                "line_number": getattr(f, "line_number", None),
-                "message": getattr(f, "message", ""),
-                "severity": getattr(f, "severity", "MEDIUM"),
-            }
+            _serialize_normalized_finding_snapshot(f)
             for f in baseline_findings
         ]
 
@@ -239,6 +325,7 @@ def execute_fix_verification(
                 findings_before_patch=findings_before_list,
                 findings_after_patch=findings_after_list,
                 user_id=user_id,
+                commit_changes=commit_changes,
             )
 
         # -------------------------------------------------------------
@@ -282,6 +369,7 @@ def execute_fix_verification(
                 findings_before_patch=findings_before_list,
                 findings_after_patch=findings_after_list,
                 user_id=user_id,
+                commit_changes=commit_changes,
             )
 
         patched_hash = calculate_directory_hash(ws.workspace_dir)
@@ -304,14 +392,7 @@ def execute_fix_verification(
             execution_errors.extend(patched_sc_errs)
 
         findings_after_list = [
-            {
-                "scanner_name": getattr(f, "scanner_name", "unknown"),
-                "rule_id": getattr(f, "rule_id", ""),
-                "file_path": getattr(f, "file_path", ""),
-                "line_number": getattr(f, "line_number", None),
-                "message": getattr(f, "message", ""),
-                "severity": getattr(f, "severity", "MEDIUM"),
-            }
+            _serialize_normalized_finding_snapshot(f)
             for f in patched_findings
         ]
 
@@ -531,6 +612,8 @@ def execute_fix_verification(
         findings_before_patch=findings_before_list,
         findings_after_patch=findings_after_list,
         user_id=user_id,
+        commit_changes=commit_changes,
+        pre_commit_hook=pre_commit_hook,
     )
 
 
@@ -565,8 +648,14 @@ def _finalize_and_persist_run(
     findings_after_patch: Optional[List[Dict[str, Any]]] = None,
     ai_interpretation: Optional[str] = None,
     user_id: Optional[str] = None,
+    commit_changes: bool = True,
+    pre_commit_hook: Optional[Any] = None,
 ) -> VerificationRunResponse:
     """Commit VerificationRun and associated SecurityEvidence to database and return response."""
+    from ..core.jobs import assert_active_worker_lease_or_abort
+    assert_active_worker_lease_or_abort(db=db, resource_id=run_id)
+    if callable(pre_commit_hook):
+        pre_commit_hook()
     completed_at = datetime.now(timezone.utc)
 
     # Enrich test_results with baseline test outcomes and regression breakdown
@@ -702,69 +791,116 @@ def _finalize_and_persist_run(
         except Exception:
             patch_proposal_id = None
 
-    db_run = VerificationRun(
-        id=run_id,
-        finding_id=finding_id,
-        patch_id=patch_id,
-        patch_proposal_id=patch_proposal_id,
-        status=status.value,
-        baseline_hash=baseline_hash,
-        patched_hash=patched_hash,
-        scanner_metadata=json.dumps(scanner_metadata),
-        scanner_config=json.dumps(scanner_config),
-        tests_executed=json.dumps(tests_executed),
-        test_results=json.dumps(augmented_test_results),
-        original_finding_status=original_finding_status,
-        new_findings=json.dumps(new_findings),
-        classified_findings=classified_json,
-        execution_errors=json.dumps(execution_errors),
-        reasons=json.dumps(reasons),
-        missing_evidence=json.dumps(missing_evidence),
-        evidence_references=json.dumps(evidence_references),
-        patch_diff=patch_diff,
-        test_summary=f"Status: {status.value} | Target: {original_finding_status} | Regressions: {len(new_findings)} | Test regressions: {len(test_regressions)}",
-        started_at=started_at,
-        completed_at=completed_at,
-        source_revision=source_revision,
-        target_revision=target_revision,
-        configuration_changes=json.dumps(configuration_changes or {}),
-        findings_before_patch=json.dumps(findings_before_patch or []),
-        findings_after_patch=json.dumps(findings_after_patch or []),
-        ai_interpretation=ai_interpretation,
-        integrity_hash=integrity_hash,
-    )
-    db.add(db_run)
+    existing_db_run = db.query(VerificationRun).filter(VerificationRun.id == run_id).first()
+    if existing_db_run is not None:
+        existing_db_run.finding_id = finding_id
+        existing_db_run.patch_id = patch_id
+        existing_db_run.patch_proposal_id = patch_proposal_id
+        existing_db_run.status = status.value
+        existing_db_run.baseline_hash = baseline_hash
+        existing_db_run.patched_hash = patched_hash
+        existing_db_run.scanner_metadata = json.dumps(scanner_metadata)
+        existing_db_run.scanner_config = json.dumps(scanner_config)
+        existing_db_run.tests_executed = json.dumps(tests_executed)
+        existing_db_run.test_results = json.dumps(augmented_test_results)
+        existing_db_run.original_finding_status = original_finding_status
+        existing_db_run.new_findings = json.dumps(new_findings)
+        existing_db_run.classified_findings = classified_json
+        existing_db_run.execution_errors = json.dumps(execution_errors)
+        existing_db_run.reasons = json.dumps(reasons)
+        existing_db_run.missing_evidence = json.dumps(missing_evidence)
+        existing_db_run.evidence_references = json.dumps(evidence_references)
+        existing_db_run.patch_diff = patch_diff
+        existing_db_run.test_summary = (
+            f"Status: {status.value} | Target: {original_finding_status} | "
+            f"Regressions: {len(new_findings)} | Test regressions: {len(test_regressions)}"
+        )
+        existing_db_run.started_at = started_at
+        existing_db_run.completed_at = completed_at
+        existing_db_run.source_revision = source_revision
+        existing_db_run.target_revision = target_revision
+        existing_db_run.configuration_changes = json.dumps(configuration_changes or {})
+        existing_db_run.findings_before_patch = json.dumps(findings_before_patch or [])
+        existing_db_run.findings_after_patch = json.dumps(findings_after_patch or [])
+        existing_db_run.ai_interpretation = ai_interpretation
+        existing_db_run.integrity_hash = integrity_hash
+        db_run = existing_db_run
+        db.query(VerificationEvidence).filter(
+            VerificationEvidence.verification_run_id == run_id
+        ).delete(synchronize_session=False)
+    else:
+        db_run = VerificationRun(
+            id=run_id,
+            finding_id=finding_id,
+            patch_id=patch_id,
+            patch_proposal_id=patch_proposal_id,
+            status=status.value,
+            baseline_hash=baseline_hash,
+            patched_hash=patched_hash,
+            scanner_metadata=json.dumps(scanner_metadata),
+            scanner_config=json.dumps(scanner_config),
+            tests_executed=json.dumps(tests_executed),
+            test_results=json.dumps(augmented_test_results),
+            original_finding_status=original_finding_status,
+            new_findings=json.dumps(new_findings),
+            classified_findings=classified_json,
+            execution_errors=json.dumps(execution_errors),
+            reasons=json.dumps(reasons),
+            missing_evidence=json.dumps(missing_evidence),
+            evidence_references=json.dumps(evidence_references),
+            patch_diff=patch_diff,
+            test_summary=f"Status: {status.value} | Target: {original_finding_status} | Regressions: {len(new_findings)} | Test regressions: {len(test_regressions)}",
+            started_at=started_at,
+            completed_at=completed_at,
+            source_revision=source_revision,
+            target_revision=target_revision,
+            configuration_changes=json.dumps(configuration_changes or {}),
+            findings_before_patch=json.dumps(findings_before_patch or []),
+            findings_after_patch=json.dumps(findings_after_patch or []),
+            ai_interpretation=ai_interpretation,
+            integrity_hash=integrity_hash,
+        )
+        db.add(db_run)
 
     for ev in evidence_entities:
         db.add(ev)
 
+    # Record audit event inside the same lease-fenced transaction
+    from ..models.audit import AuditEvent
+    from ..core.audit import sanitize_metadata
+    audit_meta = sanitize_metadata({
+        "finding_id": finding_id,
+        "status": status.value,
+        "original_finding_status": original_finding_status,
+        "regressions_count": len(new_findings),
+        "test_regressions_count": len(test_regressions),
+        "baseline_hash": baseline_hash,
+        "patched_hash": patched_hash,
+        "source_revision": source_revision,
+        "integrity_hash": integrity_hash,
+    })
+    db.add(
+        AuditEvent(
+            actor_id=user_id or "system",
+            action="verification.run_completed",
+            resource_type="verification_run",
+            resource_identifier=run_id,
+            safe_metadata=json.dumps(audit_meta),
+        )
+    )
+
     try:
-        db.commit()
-        db.refresh(db_run)
+        db.flush()
+        if commit_changes:
+            db.commit()
+            db.refresh(db_run)
     except Exception as e:
         db.rollback()
+        from ..core.jobs import StaleWorkerLeaseError
+        if isinstance(e, StaleWorkerLeaseError):
+            raise
         logger.error(f"Failed to persist verification run {run_id}: {str(e)}")
         raise ValidationError(f"Failed to record verification run in database: {str(e)}")
-
-    # Record audit event
-    record_audit_event(
-        db=db,
-        action="verification.run_completed",
-        resource_type="verification_run",
-        resource_identifier=run_id,
-        actor_id=user_id or "system",
-        metadata={
-            "finding_id": finding_id,
-            "status": status.value,
-            "original_finding_status": original_finding_status,
-            "regressions_count": len(new_findings),
-            "test_regressions_count": len(test_regressions),
-            "baseline_hash": baseline_hash,
-            "patched_hash": patched_hash,
-            "source_revision": source_revision,
-            "integrity_hash": integrity_hash,
-        }
-    )
 
     # Format response model
     return VerificationRunResponse(

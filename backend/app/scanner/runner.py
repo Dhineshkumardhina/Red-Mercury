@@ -29,6 +29,8 @@ def run_security_scan(
     selected_tools: Optional[List[str]] = None,
     timeout_per_tool: int = 60,
     options: Optional[Dict[str, Any]] = None,
+    commit_changes: bool = True,
+    pre_commit_hook: Optional[Any] = None,
 ) -> Scan:
     """Execute security scanners on repository workspace and update database state.
 
@@ -47,8 +49,11 @@ def run_security_scan(
         scan.status = "failed"
         scan.completed_at = datetime.now(timezone.utc)
         scan.summary = json.dumps({"error": error_msg})
-        db.commit()
-        db.refresh(scan)
+        if commit_changes:
+            db.commit()
+            db.refresh(scan)
+        else:
+            db.flush()
         logger.warning(f"Scan {scan.id} failed: {error_msg}")
         return scan
 
@@ -58,19 +63,29 @@ def run_security_scan(
         scan.status = "failed"
         scan.completed_at = datetime.now(timezone.utc)
         scan.summary = json.dumps({"error": error_msg})
-        db.commit()
-        db.refresh(scan)
+        if commit_changes:
+            db.commit()
+            db.refresh(scan)
+        else:
+            db.flush()
         logger.warning(f"Scan {scan.id} failed: {error_msg}")
         return scan
 
     # 2. Check if already cancelled, else transition scan to running
-    if scan.status == "cancelled":
+    if scan.status in ("cancelled", "cancelling"):
         logger.info(f"Scan {scan.id} is already in cancelled status. Aborting scan execution.")
         return scan
 
-    scan.status = "running"
-    scan.started_at = datetime.now(timezone.utc)
-    db.commit()
+    from ..core.jobs import assert_active_worker_lease_or_abort, get_active_tracker
+    assert_active_worker_lease_or_abort(db=db, resource_id=str(scan.id))
+
+    if scan.status != "running":
+        scan.status = "running"
+        scan.started_at = datetime.now(timezone.utc)
+        if commit_changes:
+            db.commit()
+        else:
+            db.flush()
 
     # 3. Determine scanner adapters to execute
     adapters_to_run = []
@@ -90,8 +105,11 @@ def run_security_scan(
         scan.status = "failed"
         scan.completed_at = datetime.now(timezone.utc)
         scan.summary = json.dumps({"error": error_msg})
-        db.commit()
-        db.refresh(scan)
+        if commit_changes:
+            db.commit()
+            db.refresh(scan)
+        else:
+            db.flush()
         logger.warning(f"Scan {scan.id} failed: {error_msg}")
         return scan
 
@@ -101,14 +119,27 @@ def run_security_scan(
     scanner_reports = []
 
     scan_id_val = str(scan.id)
+    from ..core.jobs import assert_active_worker_lease_or_abort, get_active_tracker
+    active_tracker = get_active_tracker(scan_id_val) or get_active_tracker()
 
-    # Ensure retries/re-executions do not duplicate findings or corrupt records
-    db.query(SecurityFinding).filter(SecurityFinding.scan_id == scan_id_val).delete(synchronize_session=False)
-    db.commit()
-
+    # Enforce lease fencing BEFORE executing adapters
+    assert_active_worker_lease_or_abort(db=db, resource_id=scan_id_val)
+    pending_finding_records: List[SecurityFinding] = []
     seen_finding_keys = set()
 
     def _execute_adapter(adapter):
+        from ..core.jobs import register_active_tracker
+        if active_tracker is not None:
+            register_active_tracker(active_tracker)
+            if active_tracker.should_abort():
+                return ScanJobResult(
+                    scanner_name=adapter.display_name,
+                    scanner_version=None,
+                    category=adapter.category,
+                    status=ScannerStatus.EXECUTION_ERROR,
+                    execution_time_seconds=0.0,
+                    error_message="Scan aborted due to cancellation or lease loss.",
+                )
         logger.info(f"Running adapter '{adapter.name}' ({adapter.display_name}) on scan {scan_id_val}")
         try:
             return adapter.scan(
@@ -178,10 +209,18 @@ def run_security_scan(
                 status="open",
                 finding_status="open",
             )
-            db.add(finding_record)
+            pending_finding_records.append(finding_record)
             new_findings_count += 1
 
-    # 5. Commit findings and recalculate repository security posture
+    # 5. Enforce lease fencing BEFORE flushing new findings, repository posture, scan status, or audit events
+    assert_active_worker_lease_or_abort(db=db, resource_id=scan_id_val)
+    if callable(pre_commit_hook):
+        pre_commit_hook()
+
+    # Ensure retries/re-executions do not duplicate findings or corrupt records
+    db.query(SecurityFinding).filter(SecurityFinding.scan_id == scan_id_val).delete(synchronize_session=False)
+    for finding_record in pending_finding_records:
+        db.add(finding_record)
     db.flush()
 
     from sqlalchemy import func
@@ -243,23 +282,34 @@ def run_security_scan(
     }
     scan.summary = json.dumps(summary_data)
 
-    # Record scan completion audit event
-    record_audit_event(
-        db=db,
-        action="SCAN_COMPLETED",
-        resource_type="scan",
-        resource_identifier=scan.id,
-        actor_id=repo.owner_id,
-        metadata={
-            "repository_id": repo.id,
-            "status": scan.status,
-            "findings_count": new_findings_count,
-            "health_score": health,
-        },
+    # Record scan completion audit event inside the same lease-fenced transaction
+    from ..models.audit import AuditEvent
+    from ..core.audit import sanitize_metadata
+    clean_meta = sanitize_metadata({
+        "repository_id": repo.id,
+        "status": scan.status,
+        "findings_count": new_findings_count,
+        "health_score": health,
+    })
+    db.add(
+        AuditEvent(
+            action="SCAN_COMPLETED",
+            resource_type="scan",
+            resource_identifier=scan.id,
+            actor_id=repo.owner_id,
+            safe_metadata=json.dumps(clean_meta),
+        )
     )
+    db.flush()
 
-    db.commit()
-    db.refresh(scan)
+    if commit_changes:
+        try:
+            db.commit()
+            db.refresh(scan)
+        except Exception:
+            db.rollback()
+            raise
+
     logger.info(
         f"Completed scan {scan.id} with status={scan.status}, findings={new_findings_count}, health={health}"
     )

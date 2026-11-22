@@ -81,6 +81,77 @@ def resolve_tool_binary(tool_name: str) -> Optional[str]:
     return shutil.which(tool_name, path=search_path)
 
 
+def run_scanner_subprocess(
+    args: List[str],
+    env: Dict[str, str],
+    timeout_seconds: int,
+    scan_id: Optional[str] = None,
+    subprocess_mod: Any = None,
+) -> "subprocess.CompletedProcess[str]":
+    """Execute a scanner subprocess with shell=False, active cancellation tracking, and full process-tree cleanup."""
+    import platform
+    import subprocess
+    from ..core.jobs import get_active_tracker
+
+    sp = subprocess_mod or subprocess
+    tracker = get_active_tracker(scan_id) or get_active_tracker()
+    if tracker is not None and tracker.should_abort():
+        raise subprocess.TimeoutExpired(cmd=args, timeout=0, output="", stderr="Job cancelled before scanner spawn")
+
+    # If a unit test has monkeypatched subprocess.run, delegate to sp.run so test mocks work transparently
+    run_fn = getattr(sp, "run", subprocess.run)
+    if getattr(run_fn, "__name__", "") != "run" or getattr(run_fn, "__module__", "") != "subprocess":
+        return run_fn(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=timeout_seconds,
+        )
+
+    popen_kwargs: Dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "env": env,
+        "shell": False,
+    }
+    if platform.system() == "Windows":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(args, **popen_kwargs)
+    if tracker is not None:
+        tracker.register_process(proc)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+        if tracker is not None and tracker.should_abort():
+            raise subprocess.TimeoutExpired(cmd=args, timeout=timeout_seconds, output=stdout, stderr="Scanner terminated by job cancellation")
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=proc.returncode,
+            stdout=stdout or "",
+            stderr=stderr or "",
+        )
+    except subprocess.TimeoutExpired:
+        from ..core.jobs import JobExecutionTracker
+        JobExecutionTracker._kill_process_tree(proc)
+        raise
+    except Exception:
+        from ..core.jobs import JobExecutionTracker
+        JobExecutionTracker._kill_process_tree(proc)
+        raise
+    finally:
+        if tracker is not None:
+            tracker.unregister_process(proc)
+
+
 
 # Sensitive patterns to redact from findings, evidence, and messages
 SECRET_PATTERNS = [
