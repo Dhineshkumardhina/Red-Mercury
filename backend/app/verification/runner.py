@@ -206,34 +206,71 @@ def run_pytest_in_workspace(
     # Determine test arguments
     cmd_args: List[str] = []
 
-    # Check if tests directory or test target exists
-    if test_target:
+    # Check if explicit test target was provided or project-wide test discovery should run
+    if test_target is not None:
+        if not isinstance(test_target, str) or not test_target.strip():
+            return TestExecutionOutcome(
+                test_suite_name="invalid_target",
+                status="error",
+                error_message="Invalid test target: test target cannot be empty or whitespace-only.",
+            )
+
+        if "\x00" in test_target:
+            return TestExecutionOutcome(
+                test_suite_name="invalid_target",
+                status="error",
+                error_message="Invalid test target: null bytes are not permitted.",
+            )
+
         clean_target = test_target.strip()
         if clean_target.startswith("-"):
             return TestExecutionOutcome(
-                test_suite_name=test_target,
+                test_suite_name="invalid_target",
                 status="error",
-                error_message=f"Command option injection attempt rejected in test target: {test_target}",
+                error_message="Command option injection attempt rejected in test target.",
             )
 
         resolved_ws = workspace_dir.resolve()
-        target_path = (resolved_ws / clean_target).resolve()
+        posix_rel = clean_target.replace("\\", "/")
+        target_parts = [part for part in posix_rel.split("/") if part and part != "."]
+        if (
+            clean_target.startswith(("/", "\\"))
+            or posix_rel.startswith("//")
+            or re.match(r"^[A-Za-z]:", clean_target)
+            or ".." in target_parts
+            or not target_parts
+        ):
+            return TestExecutionOutcome(
+                test_suite_name=test_target,
+                status="error",
+                error_message="Path traversal detected in test target: target must be a safe relative workspace path.",
+            )
+
+        raw_target = resolved_ws / posix_rel
+        if raw_target.is_symlink():
+            return TestExecutionOutcome(
+                test_suite_name=test_target,
+                status="error",
+                error_message="Path traversal detected in test target: symbolic link targets are not permitted.",
+            )
+
+        target_path = raw_target.resolve()
         try:
             target_path.relative_to(resolved_ws)
         except ValueError:
             return TestExecutionOutcome(
                 test_suite_name=test_target,
                 status="error",
-                error_message=f"Path traversal detected in test target: {test_target}",
+                error_message="Path traversal detected in test target: resolved path escapes workspace boundary.",
             )
 
         if not target_path.exists():
             return TestExecutionOutcome(
                 test_suite_name=test_target,
                 status="skipped",
-                error_message=f"Specified test target does not exist: {test_target}",
+                error_message="Specified test target does not exist in workspace.",
             )
-        cmd_args = ["--", clean_target]
+        cmd_args = ["--", "/".join(target_parts)]
     else:
         # Check if any tests directory exists
         has_tests = (

@@ -8,11 +8,30 @@ Enforces:
 """
 from dataclasses import dataclass, field
 import hashlib
+import logging
 import os
 from pathlib import Path
+import platform
 import shutil
+import stat
+import struct
+import subprocess
 import tempfile
 from typing import Dict, List, Optional
+
+logger = logging.getLogger("redmercury.verification.workspace")
+
+# Linux kernel POSIX ACL xattr constants (uapi/linux/posix_acl_xattr.h)
+_ACL_EA_VERSION = 2
+_ACL_UNDEFINED_ID = 0xFFFFFFFF
+_ACL_USER_OBJ = 0x01
+_ACL_USER = 0x02
+_ACL_GROUP_OBJ = 0x04
+_ACL_MASK = 0x10
+_ACL_OTHER = 0x20
+_ACL_READ = 0x04
+_ACL_WRITE = 0x02
+_ACL_EXECUTE = 0x01
 
 
 # Environment variables to purge from runner sub-processes to avoid secret leakage
@@ -249,6 +268,7 @@ def create_verification_workspace(
             dest_file.write_text(content, encoding="utf-8")
 
     baseline_hash = calculate_directory_hash(workspace_path)
+    ensure_sandbox_readable_workspace(workspace_path)
 
     return VerificationWorkspace(
         workspace_dir=workspace_path,
@@ -256,3 +276,177 @@ def create_verification_workspace(
         is_disposable=True,
         temp_dir_obj=temp_dir
     )
+
+
+def parse_sandbox_uid(sandbox_user: Optional[str]) -> int:
+    """Extract numeric container UID from '<uid>[:<gid>]' configuration."""
+    raw_uid = (sandbox_user or "10002:10002").strip().split(":", 1)[0].strip()
+    try:
+        uid = int(raw_uid)
+    except ValueError as exc:
+        raise PermissionError(f"Invalid sandbox container UID specification '{sandbox_user}'.") from exc
+    if uid < 0:
+        raise PermissionError(f"Invalid negative sandbox container UID '{uid}'.")
+    return uid
+
+
+def validate_strict_temp_workspace(workspace_dir: Path) -> Path:
+    """Validate that workspace_dir is an existing directory strictly inside system temp_root.
+
+    Rejects the temp root itself, paths outside temp_root, non-existent/non-directory
+    paths, and any path traversing or resolving through symbolic links.
+    """
+    if not isinstance(workspace_dir, Path):
+        raise ValueError("Workspace path must be a pathlib.Path instance.")
+
+    if workspace_dir.is_symlink():
+        raise PermissionError(f"Refusing symbolic link workspace root: {workspace_dir}")
+
+    temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+    try:
+        resolved_ws = workspace_dir.resolve(strict=True)
+    except OSError as exc:
+        raise FileNotFoundError(f"Workspace directory does not exist or cannot be resolved: {workspace_dir}") from exc
+
+    if not resolved_ws.is_dir():
+        raise NotADirectoryError(f"Workspace path is not a directory: {resolved_ws}")
+
+    if resolved_ws == temp_root or temp_root not in resolved_ws.parents:
+        raise PermissionError(
+            f"Refusing workspace outside strict temporary-root descendant boundary: {resolved_ws}"
+        )
+
+    # Walk ancestor components back to temp_root to reject intermediate symlink redirects
+    curr = workspace_dir
+    while curr != curr.parent:
+        try:
+            if curr.resolve(strict=True) == temp_root:
+                break
+        except OSError as exc:
+            raise PermissionError(f"Unresolvable workspace ancestor path: {curr}") from exc
+        if curr.is_symlink():
+            raise PermissionError(f"Workspace path traverses symbolic link ancestor: {curr}")
+        curr = curr.parent
+
+    return resolved_ws
+
+
+def _build_posix_acl_xattr(owner_perm: int, target_uid: int, target_perm: int) -> bytes:
+    """Serialize a minimal POSIX ACL v2 xattr granting access strictly to owner and target_uid."""
+    entries = (
+        (_ACL_USER_OBJ, owner_perm, _ACL_UNDEFINED_ID),
+        (_ACL_USER, target_perm, target_uid),
+        (_ACL_GROUP_OBJ, 0, _ACL_UNDEFINED_ID),
+        (_ACL_MASK, target_perm, _ACL_UNDEFINED_ID),
+        (_ACL_OTHER, 0, _ACL_UNDEFINED_ID),
+    )
+    return struct.pack("<I", _ACL_EA_VERSION) + b"".join(
+        struct.pack("<HHI", tag, perm, eid) for tag, perm, eid in entries
+    )
+
+
+def _apply_scoped_posix_permissions(path: Path, target_uid: int, is_dir: bool, owner_exec: bool) -> None:
+    """Enforce owner-only base mode plus UID-scoped POSIX ACL without world-readable bits."""
+    base_mode = (
+        stat.S_IRWXU
+        if is_dir
+        else (stat.S_IRUSR | stat.S_IWUSR | (stat.S_IXUSR if owner_exec else 0))
+    )
+    os.chmod(path, base_mode)
+
+    host_uid_fn = getattr(os, "getuid", None)
+    if host_uid_fn is not None and host_uid_fn() == target_uid:
+        # Process already runs under container UID; private 0o700/0o600 owner permissions suffice.
+        return
+
+    owner_acl_perm = _ACL_READ | _ACL_WRITE | (_ACL_EXECUTE if (is_dir or owner_exec) else 0)
+    target_acl_perm = _ACL_READ | (_ACL_EXECUTE if (is_dir or owner_exec) else 0)
+
+    setxattr_fn = getattr(os, "setxattr", None)
+    if setxattr_fn is not None:
+        acl_blob = _build_posix_acl_xattr(
+            owner_perm=owner_acl_perm,
+            target_uid=target_uid,
+            target_perm=target_acl_perm,
+        )
+        try:
+            setxattr_fn(path, "system.posix_acl_access", acl_blob, follow_symlinks=False)
+        except OSError as exc:
+            raise PermissionError(
+                f"Failed setting POSIX ACL for UID {target_uid} on '{path}': {exc}. "
+                "Refusing insecure world-readable fallback."
+            ) from exc
+    else:
+        setfacl_bin = shutil.which("setfacl")
+        if not setfacl_bin:
+            raise PermissionError(
+                f"Cannot establish private container access for UID {target_uid} on '{path}': "
+                "POSIX ACL support (os.setxattr/setfacl) is unavailable. "
+                "Refusing insecure world-readable fallback."
+            )
+        acl_perm_str = "rx" if (is_dir or owner_exec) else "r"
+        acl_spec = f"u:{target_uid}:{acl_perm_str},g::-,m::{acl_perm_str},o::-"
+        res = subprocess.run(
+            [setfacl_bin, "--no-dereference", "-m", acl_spec, str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if res.returncode != 0:
+            raise PermissionError(
+                f"setfacl failed for UID {target_uid} on '{path}': {res.stderr.strip() or res.returncode}. "
+                "Refusing insecure world-readable fallback."
+            )
+
+    if os.name == "posix":
+        other_bits = stat.S_IMODE(os.lstat(path).st_mode) & stat.S_IRWXO
+        if other_bits != 0:
+            raise PermissionError(
+                f"Security invariant violated: non-zero world permission bits ({oct(other_bits)}) on '{path}'."
+            )
+
+
+def ensure_sandbox_readable_workspace(
+    workspace_dir: Path,
+    sandbox_uid: Optional[int] = None,
+) -> None:
+    """Grant private container UID (default 10002) read/execute access to temp workspaces on POSIX.
+
+    Enforces strict temporary-root boundary validation, skips all symbolic links without
+    following them, keeps other/world permissions strictly disabled (zero 0o007 bits),
+    and fails closed with PermissionError if POSIX ACL setup fails.
+    """
+    resolved_ws = validate_strict_temp_workspace(workspace_dir)
+
+    if platform.system() == "Windows":
+        return
+
+    if sandbox_uid is None:
+        from ..core.config import settings
+        target_uid = parse_sandbox_uid(settings.SANDBOX_USER)
+    else:
+        target_uid = parse_sandbox_uid(str(sandbox_uid))
+
+    _apply_scoped_posix_permissions(resolved_ws, target_uid=target_uid, is_dir=True, owner_exec=True)
+
+    for root, dirs, files in os.walk(resolved_ws, followlinks=False):
+        root_path = Path(root)
+        for d in list(dirs):
+            d_path = root_path / d
+            if d_path.is_symlink():
+                dirs.remove(d)
+                continue
+            _apply_scoped_posix_permissions(d_path, target_uid=target_uid, is_dir=True, owner_exec=True)
+
+        for fname in files:
+            f_path = root_path / fname
+            if f_path.is_symlink():
+                continue
+            mode = f_path.stat(follow_symlinks=False).st_mode
+            _apply_scoped_posix_permissions(
+                f_path,
+                target_uid=target_uid,
+                is_dir=False,
+                owner_exec=bool(mode & stat.S_IXUSR),
+            )

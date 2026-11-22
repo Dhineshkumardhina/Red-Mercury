@@ -275,14 +275,27 @@ def execute_fix_verification(
                 "failed": base_test_outcome.failed_count,
                 "error": base_test_outcome.error_message
             }
+            if base_test_outcome.status in ("error", "timeout"):
+                err_detail = (
+                    f"Baseline test execution encountered {base_test_outcome.status}: "
+                    f"{base_test_outcome.error_message or 'Execution fault'}"
+                )
+                execution_errors.append(err_detail)
+                reasons.append(err_detail)
             if base_test_outcome.status != "skipped":
+                base_ev_ref = (
+                    f"Baseline tests passed: {base_test_outcome.passed_count}, "
+                    f"failed: {base_test_outcome.failed_count}"
+                )
+                if base_test_outcome.status in ("error", "timeout") and base_test_outcome.error_message:
+                    base_ev_ref = f"{base_ev_ref}, error: {base_test_outcome.error_message[:200]}"
                 evidence_entities.append(VerificationEvidence(
                     id=f"ev_base_unit_{verification_run_id}",
                     verification_run_id=verification_run_id,
                     evidence_type="baseline_unit_test",
                     result=base_test_outcome.status,
                     tool_name_and_version="pytest-baseline-runner",
-                    evidence_reference=f"Baseline tests passed: {base_test_outcome.passed_count}, failed: {base_test_outcome.failed_count}"
+                    evidence_reference=base_ev_ref
                 ))
 
         # -------------------------------------------------------------
@@ -440,6 +453,7 @@ def execute_fix_verification(
 
         # 4.2 Run existing project tests and detect regressions
         existing_tests_passed = True
+        existing_tests_failed = False
         if request.run_existing_tests:
             test_outcome = run_pytest_in_workspace(
                 workspace_dir=ws.workspace_dir,
@@ -463,12 +477,16 @@ def execute_fix_verification(
                 test_regressions.append(reg_msg)
                 reasons.append(reg_msg)
                 existing_tests_passed = False
+                existing_tests_failed = True
             elif test_outcome.status == "failed":
                 existing_tests_passed = False
+                existing_tests_failed = True
                 reasons.append(f"Existing project unit test suite '{test_outcome.test_suite_name}' failed after applying patch.")
             elif test_outcome.status in ("error", "timeout"):
                 existing_tests_passed = False
-                reasons.append(f"Existing test execution encountered error/timeout: {test_outcome.error_message}")
+                err_detail = f"Existing test execution encountered {test_outcome.status}: {test_outcome.error_message}"
+                execution_errors.append(err_detail)
+                reasons.append(err_detail)
             elif test_outcome.status == "skipped":
                 missing_evidence.append("No existing project test suite was found in repository.")
 
@@ -483,6 +501,7 @@ def execute_fix_verification(
 
         # 4.3 Run targeted security regression test
         regression_test_passed = True
+        regression_test_failed = False
         regression_test_executed = False
 
         if request.run_regression_tests:
@@ -506,9 +525,15 @@ def execute_fix_verification(
                     "error": reg_outcome.error_message
                 }
 
-                if reg_outcome.status != "passed":
+                if reg_outcome.status == "failed":
                     regression_test_passed = False
+                    regression_test_failed = True
                     reasons.append(f"Targeted security regression test failed: {reg_outcome.error_message or 'Assertion failed'}")
+                elif reg_outcome.status != "passed":
+                    regression_test_passed = False
+                    err_detail = f"Targeted security regression test execution {reg_outcome.status}: {reg_outcome.error_message or 'Execution fault'}"
+                    execution_errors.append(err_detail)
+                    reasons.append(err_detail)
                 else:
                     reasons.append("Targeted security regression test passed successfully on patched workspace.")
 
@@ -531,16 +556,16 @@ def execute_fix_verification(
         # Core Axioms:
         # 1. A disappearing scanner finding alone MUST NOT establish that a vulnerability is fixed.
         # 2. A passing test suite alone MUST NOT establish that a patch is secure.
-        # 3. New findings or test regressions force FAILED_VERIFICATION.
-        # 4. Scanner crashes or un-reproduced baseline finding force INCONCLUSIVE.
+        # 3. New findings or real test failures/regressions force FAILED_VERIFICATION.
+        # 4. Scanner/runner crashes, timeouts, or un-reproduced baseline findings force INCONCLUSIVE.
 
         # Rule 5.1: FAILED_VERIFICATION
         if (
             original_classification in (FindingRegressionClassification.STILL_PRESENT, FindingRegressionClassification.POTENTIALLY_REGRESSED) or
             len(new_findings_list) > 0 or
             len(test_regressions) > 0 or
-            not existing_tests_passed or
-            (regression_test_executed and not regression_test_passed)
+            existing_tests_failed or
+            (regression_test_executed and regression_test_failed)
         ):
             status = VerificationStatus.FAILED_VERIFICATION
 
@@ -564,6 +589,7 @@ def execute_fix_verification(
             and existing_tests_passed
             and len(test_regressions) == 0
             and len(new_findings_list) == 0
+            and len(execution_errors) == 0
         ):
             status = VerificationStatus.VERIFIED_AGAINST_DEFINED_CHECKS
             reasons.append(

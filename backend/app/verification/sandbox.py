@@ -21,13 +21,19 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from ..core.config import settings
 from ..core.logging import get_logger
-from .workspace import get_sanitized_runner_env
+from .workspace import (
+    ensure_sandbox_readable_workspace,
+    get_sanitized_runner_env,
+    parse_sandbox_uid,
+    validate_strict_temp_workspace,
+)
 
 logger = get_logger("redmercury.verification.sandbox")
 
@@ -195,11 +201,15 @@ def build_container_run_command(
         "-v", f"{ws_mount_path}:/workspace:rw",
         "-w", "/workspace",
         "-e", "PYTHONPATH=/workspace",
+        "-e", "HOME=/tmp",
+        "-e", "TMPDIR=/tmp",
+        "-e", "PYTEST_DEBUG_TEMPROOT=/tmp",
+        "-e", "PYTHONDONTWRITEBYTECODE=1",
         config.image,
     ])
     exec_args = list(cmd_args)
     if not exec_args or (exec_args[0] not in ("pytest", "python", "python3") and not exec_args[0].endswith("pytest")):
-        exec_args = ["pytest", "-v", "-o", "pythonpath=."] + exec_args
+        exec_args = ["pytest", "-v", "-p", "no:cacheprovider", "-o", "pythonpath=."] + exec_args
     docker_cmd.extend(exec_args)
     return docker_cmd
 
@@ -210,9 +220,19 @@ def execute_in_container(
     config: SandboxConfig,
 ) -> Tuple[int, str, str, bool, Optional[str]]:
     """Execute command inside hardened Docker container sandbox with resource bounding."""
+    try:
+        resolved_ws = validate_strict_temp_workspace(workspace_dir)
+        ensure_sandbox_readable_workspace(
+            resolved_ws,
+            sandbox_uid=parse_sandbox_uid(config.user),
+        )
+    except Exception as exc:
+        logger.error(f"Sandbox workspace validation/permission setup failed closed: {exc}")
+        return -1, "", "", False, f"Sandbox workspace access error: {exc}"
+
     container_name = f"redmercury-sbx-{uuid.uuid4().hex[:12]}"
     docker_cmd = build_container_run_command(
-        workspace_dir=workspace_dir,
+        workspace_dir=resolved_ws,
         container_name=container_name,
         cmd_args=cmd_args,
         config=config,
@@ -275,6 +295,12 @@ def execute_in_restricted_subprocess(
     NOTE: This is ONLY engaged when explicitly opted in by internal test/benchmark fixtures.
     Untrusted repository code is rejected under the fail-closed policy.
     """
+    try:
+        resolved_ws = validate_strict_temp_workspace(workspace_dir)
+    except Exception as exc:
+        logger.error(f"Restricted runner workspace validation failed closed: {exc}")
+        return -1, "", "", False, f"Sandbox workspace access error: {exc}"
+
     env = get_sanitized_runner_env()
     full_cmd = [sys.executable, "-m", "pytest", "-v"] + cmd_args
 
@@ -285,7 +311,7 @@ def execute_in_restricted_subprocess(
         if tracker is not None and tracker.should_abort():
             return -1, "", "", False, "Restricted runner execution cancelled before spawn."
         popen_kwargs: Dict[str, Any] = {
-            "cwd": str(workspace_dir),
+            "cwd": str(resolved_ws),
             "env": env,
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
