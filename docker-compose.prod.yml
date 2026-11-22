@@ -1,6 +1,10 @@
 networks:
   redmercury_internal:
     driver: bridge
+    internal: true
+  redmercury_worker_isolated:
+    driver: bridge
+    internal: true
   redmercury_public:
     driver: bridge
 
@@ -11,10 +15,10 @@ volumes:
 
 services:
   # ----------------------------------------------------------------------------
-  # Production PostgreSQL Database
+  # Production PostgreSQL Database (Pinned digest, internal-only network)
   # ----------------------------------------------------------------------------
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
     container_name: redmercury_postgres
     restart: always
     environment:
@@ -25,6 +29,17 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - redmercury_internal
+      - redmercury_worker_isolated
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-redmercury_admin} -d ${POSTGRES_DB:-redmercury_prod}"]
       interval: 10s
@@ -37,7 +52,38 @@ services:
           memory: 4096M
 
   # ----------------------------------------------------------------------------
-  # FastAPI Application Server (Non-root, unprivileged)
+  # Redis Distributed Rate Limiting & Ephemeral Coordination (Pinned digest, internal-only)
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    container_name: redmercury_redis
+    restart: always
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    networks:
+      - redmercury_internal
+      - redmercury_worker_isolated
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /data:uid=999,gid=1000,mode=0700
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # ----------------------------------------------------------------------------
+  # FastAPI Application Server (Non-root, cap-drop ALL, read-only rootfs, internal network)
+  # Note: Direct API-to-internet egress is blocked by redmercury_internal (internal: true).
+  # Public Git ingestion fails closed unless an SSRF-filtering GIT_EGRESS_PROXY_URL is deployed.
   # ----------------------------------------------------------------------------
   api:
     build:
@@ -48,21 +94,37 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       APP_ENV: production
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-redmercury_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-redmercury_prod}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RATE_LIMIT_FAIL_OPEN: ${RATE_LIMIT_FAIL_OPEN:-false}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in production}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://redmercury.xerova.com}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_FORMAT_JSON: "true"
       DOCS_ENABLED: "false"
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GIT_EGRESS_PROXY_URL: ${GIT_EGRESS_PROXY_URL:-}
+      JOB_DISPATCH_MODE: "queue_only"
+      JOB_LEASE_DURATION_SECONDS: ${JOB_LEASE_DURATION_SECONDS:-60}
+      JOB_HEARTBEAT_INTERVAL_SECONDS: ${JOB_HEARTBEAT_INTERVAL_SECONDS:-15}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
     volumes:
       - workspace_data:/app/data/workspaces
     networks:
       - redmercury_internal
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=1777
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/live"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/ready"]
       interval: 15s
       timeout: 3s
       retries: 3
@@ -73,7 +135,7 @@ services:
           memory: 2048M
 
   # ----------------------------------------------------------------------------
-  # Sandboxed Scanner Worker (Strict cgroups, cap-drop, isolated user)
+  # Sandboxed Scanner Worker (Strict cgroups, cap-drop, isolated internal network, read-only rootfs)
   # ----------------------------------------------------------------------------
   worker:
     build:
@@ -84,9 +146,25 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       APP_ENV: production
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-redmercury_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-redmercury_prod}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://redmercury.xerova.com}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT_JSON: "true"
+      ALLOW_LOCAL_INGESTION_IN_PRODUCTION: "false"
+      SANDBOX_FAIL_CLOSED: "true"
+      SANDBOX_ALLOW_HOST_FALLBACK: "false"
+      GIT_EGRESS_PROXY_URL: ${GIT_EGRESS_PROXY_URL:-}
+      JOB_DISPATCH_MODE: "queue_only"
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      JOB_LEASE_DURATION_SECONDS: ${JOB_LEASE_DURATION_SECONDS:-60}
+      JOB_HEARTBEAT_INTERVAL_SECONDS: ${JOB_HEARTBEAT_INTERVAL_SECONDS:-15}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
       WORKSPACE_ROOT: /sandbox/workspaces
       PIP_NO_INDEX: "1"
       NO_PROXY: "*"
@@ -94,7 +172,7 @@ services:
       - workspace_data:/sandbox/workspaces:ro # Read-only access to repository archives
       - worker_temp:/sandbox/temp
     networks:
-      - redmercury_internal
+      - redmercury_worker_isolated
     healthcheck:
       test: ["CMD", "python", "-m", "app.scanner.worker", "--healthcheck"]
       interval: 15s
@@ -106,6 +184,9 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:uid=10002,gid=10002,mode=1777
     deploy:
       resources:
         limits:
@@ -114,7 +195,7 @@ services:
           pids: 100
 
   # ----------------------------------------------------------------------------
-  # React Frontend (Static SPA on unprivileged Nginx)
+  # React Frontend (Static SPA on unprivileged Nginx, internal network)
   # ----------------------------------------------------------------------------
   frontend:
     build:
@@ -124,6 +205,15 @@ services:
     restart: always
     networks:
       - redmercury_internal
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:uid=101,gid=101,mode=0755
+      - /var/run:uid=101,gid=101,mode=0755
+      - /tmp:uid=101,gid=101,mode=1777
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
       interval: 15s
@@ -134,7 +224,7 @@ services:
   # Production Reverse Proxy (TLS termination, rate limiting, routing)
   # ----------------------------------------------------------------------------
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     container_name: redmercury_proxy
     restart: always
     depends_on:
@@ -151,6 +241,16 @@ services:
     networks:
       - redmercury_internal
       - redmercury_public
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/live || exit 1"]
       interval: 15s

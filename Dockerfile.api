@@ -6,7 +6,7 @@
 # ------------------------------------------------------------------------------
 # Stage 1: Build Dependencies
 # ------------------------------------------------------------------------------
-FROM python:3.11-slim-bookworm AS builder
+FROM python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39 AS builder
 
 WORKDIR /build
 
@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir --prefix=/install gunicorn uvicorn[standard] psyc
 # ------------------------------------------------------------------------------
 # Stage 2: Hardened Runtime
 # ------------------------------------------------------------------------------
-FROM python:3.11-slim-bookworm AS runtime
+FROM python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39 AS runtime
 
 LABEL maintainer="Xerova Digital Solutions <security@xerova.com>"
 LABEL service="redmercury-api"
@@ -47,14 +47,15 @@ RUN groupadd -g 10001 redmercury && \
 # Copy installed python dependencies from builder
 COPY --from=builder /install /usr/local
 
-# Copy backend application code
+# Copy backend application code (owned by root, read-only to redmercury runtime user)
 COPY backend/app /app/app
 COPY backend/alembic /app/alembic
 COPY backend/alembic.ini /app/alembic.ini
 
-# Create workspace directory with restricted permissions
+# Create workspace directory with restricted permissions (only workspaces dir is writable)
 RUN mkdir -p /app/data/workspaces && \
-    chown -R redmercury:redmercury /app
+    chown -R redmercury:redmercury /app/data && \
+    chmod -R 750 /app/data
 
 # Switch to non-root user
 USER redmercury:redmercury

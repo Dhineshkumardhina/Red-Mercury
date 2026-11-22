@@ -3,7 +3,7 @@
 # Dedicated container for executing AST, SAST, secret detection, and test jobs
 # ==============================================================================
 
-FROM python:3.11-slim-bookworm
+FROM python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39
 
 LABEL maintainer="Xerova Digital Solutions <security@xerova.com>"
 LABEL service="redmercury-worker"
@@ -24,9 +24,11 @@ COPY backend/requirements.txt /sandbox/requirements.txt
 RUN pip install --no-cache-dir -r /sandbox/requirements.txt && \
     pip install --no-cache-dir pytest==8.1.1
 
-# Download and install pinned Gitleaks binary
+# Download, cryptographically verify SHA-256 checksum, and install pinned Gitleaks binary (SEC-20)
 ARG GITLEAKS_VERSION=8.18.2
-RUN curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz && \
+ARG GITLEAKS_SHA256=6298c9235dfc9278c14b28afd9b7fa4e6f4a289cb1974bd27949fc1e9122bdee
+RUN curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz && \
+    echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c - && \
     tar -xzf gitleaks.tar.gz gitleaks && \
     mv gitleaks /usr/local/bin/gitleaks && \
     chmod 755 /usr/local/bin/gitleaks && \

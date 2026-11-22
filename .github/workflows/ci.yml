@@ -22,16 +22,39 @@ jobs:
   backend-tests:
     name: "Backend Tests & Migration Consistency"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_redmercury
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d test_redmercury"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+      redis:
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=5
 
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: "Set up Python 3.11"
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
           cache: "pip"
@@ -42,6 +65,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements-dev.txt
 
+      - name: "Build Worker Sandbox Image for Live Container Isolation Tests"
+        run: |
+          docker build -f Dockerfile.worker -t redmercury-worker:latest .
+
       - name: "Verify Python Syntax and Compilation"
         run: |
           python -m compileall backend/app -q
@@ -50,14 +77,26 @@ jobs:
         run: |
           python -m pytest tests/test_migration_consistency.py -v
 
-      - name: "Run Backend Pytest Suite (Unit, Resilience & E2E Journeys)"
+      - name: "Run Backend Pytest Suite (Unit, Live Postgres 16, Live Redis 7, Docker Sandbox & E2E)"
         env:
           APP_ENV: "development"
           DATABASE_URL: "sqlite:///./test_redmercury.db"
+          TEST_POSTGRES_URL: "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/test_redmercury"
+          TEST_REDIS_URL: "redis://127.0.0.1:6379/15"
           SECRET_KEY: "ci-testing-secret-key-at-least-32-chars-long"
           SANDBOX_ALLOW_HOST_FALLBACK: "true"
         run: |
-          python -m pytest tests/ --tb=short
+          mkdir -p .redmercury_artifacts
+          python -m pytest tests/ --tb=short --junitxml=.redmercury_artifacts/pytest-results.xml
+
+      - name: "Upload Backend Test Results Artifact"
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-pytest-results
+          path: .redmercury_artifacts/pytest-results.xml
+          if-no-files-found: warn
+          retention-days: 14
 
   # ============================================================================
   # 2. Frontend Tests, TypeScript Type Checks & Production Build
@@ -71,12 +110,12 @@ jobs:
 
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: "Set up Node.js 20"
-        uses: actions/setup-node@v4
+      - name: "Set up Node.js 22"
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 22
           cache: "npm"
           cache-dependency-path: "frontend/package-lock.json"
 
@@ -91,6 +130,9 @@ jobs:
       - name: "Run Frontend Vitest Suite"
         working-directory: frontend
         run: npm test
+
+      - name: "Run Electron Security Regression Suite"
+        run: node --test electron/security.test.cjs
 
       - name: "Build Frontend Production Bundle"
         working-directory: frontend
@@ -108,12 +150,12 @@ jobs:
 
     steps:
       - name: "Checkout repository (full history for secret scanning)"
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: "Set up Python 3.11"
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
           cache: "pip"
@@ -123,15 +165,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install pip-audit bandit
 
-      - name: "Set up Node.js 20"
-        uses: actions/setup-node@v4
+      - name: "Set up Node.js 22"
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 22
 
-      - name: "Download and Install Gitleaks"
+      - name: "Download, Verify SHA-256 Checksum, and Install Gitleaks"
         run: |
           GITLEAKS_VERSION="8.18.2"
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          GITLEAKS_SHA256="6298c9235dfc9278c14b28afd9b7fa4e6f4a289cb1974bd27949fc1e9122bdee"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
           tar -xzf gitleaks.tar.gz gitleaks
           sudo mv gitleaks /usr/local/bin/
           rm -f gitleaks.tar.gz
@@ -143,7 +187,9 @@ jobs:
 
       - name: "Run Backend Dependency Vulnerability Audit"
         run: |
-          python -m pip_audit -r backend/requirements.txt --desc on
+          # Note: CVE-2026-132276 affects wcmatch~=8.5.1 which is strictly upper-bounded (<9.0) by upstream semgrep;
+          # Red Mercury does not invoke wcmatch.globmatch/fnmatch on user filenames.
+          python -m pip_audit -r backend/requirements.txt --desc on --ignore-vuln CVE-2026-132276
 
       - name: "Run Frontend Dependency Vulnerability Audit"
         working-directory: frontend
@@ -166,13 +212,13 @@ jobs:
 
     steps:
       - name: "Checkout repository"
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: "Set up Docker Buildx"
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: "Validate API Dockerfile"
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: ./Dockerfile.api
@@ -180,7 +226,7 @@ jobs:
           tags: redmercury-api:test
 
       - name: "Validate Worker Dockerfile"
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: ./Dockerfile.worker
@@ -188,7 +234,7 @@ jobs:
           tags: redmercury-worker:test
 
       - name: "Validate Frontend Dockerfile"
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: ./Dockerfile.frontend

@@ -1,20 +1,19 @@
-# Gitleaks Configuration for Red Mercury
-# Defines allowlists for synthetic test fixtures, regression suites, and evaluation reports.
+# Gitleaks Configuration for Red Mercury (Phase 5 / SEC-20)
+# Narrowly scoped allowlist restricted strictly to synthetic secret-detection unit test fixtures
+# and historical audit markdown reports. Never globally exclude source or script directories.
 
 [allowlist]
-description = "Synthetic test fixtures, benchmarks, and research evaluation reports"
+description = "Synthetic secret-scanner unit test fixtures and example env template only"
 paths = [
-    '''(?i)^tests/''',
-    '''(?i)tests/''',
-    '''(?i)^benchmark/''',
-    '''(?i)benchmark/''',
-    '''(?i)^samples/''',
-    '''(?i)samples/''',
-    '''(?i)^scripts/''',
-    '''(?i)scripts/''',
-    '''(?i)^reports/''',
-    '''(?i)reports/''',
-    '''(?i)^REDMERCURY_.*\.md$''',
-    '''(?i)REDMERCURY_.*\.md$'''
+    '''(?i)^tests/test_git_history_secret_scanning\.py$''',
+    '''(?i)^tests/test_scanners\.py$''',
+    '''(?i)^tests/test_scanner_accuracy_benchmarks\.py$''',
+    '''(?i)^tests/test_github_integration\.py$''',
+    '''(?i)^tests/test_evidence_management\.py$''',
+    '''(?i)^tests/test_phase4_core_pipeline_tenant_security\.py$''',
+    '''(?i)^tests/test_phase5_deployment_security\.py$''',
+    '''(?i)^benchmark/cases/.*\.json$''',
+    '''(?i)^samples/sqli_auth_gateway/''',
+    '''(?i)^\.env\.example$'''
 ]
 

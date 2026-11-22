@@ -1,0 +1,25 @@
+# Exclude heavy local directories, build artifacts, and secrets from Docker build context
+.git
+.github
+node_modules
+frontend/node_modules
+frontend/dist
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+data/workspaces
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+.env
+.env.*
+!.env.example
+.redmercury_artifacts
+reports/*.json
