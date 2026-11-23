@@ -74,9 +74,10 @@ jobs:
 
       - name: "Build Windows x64 NSIS Installer"
         shell: pwsh
-        env:
-          CSC_LINK: ${{ secrets['WIN_CSC_LINK'] }}
-          CSC_KEY_PASSWORD: ${{ secrets['WIN_CSC_KEY_PASSWORD'] }}
+        # Code signing placeholder: To sign release builds, configure repository secrets and uncomment:
+        # env:
+        #   CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+        #   CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: |
           .\node_modules\.bin\electron-builder.cmd --win nsis --x64
 
@@ -148,15 +149,16 @@ jobs:
           python3 scripts/prepare_desktop_bundle.py --target darwin-x64
 
       - name: "Build macOS DMG and ZIP"
-        env:
-          CSC_LINK: ${{ secrets['MAC_CSC_LINK'] }}
-          CSC_KEY_PASSWORD: ${{ secrets['MAC_CSC_KEY_PASSWORD'] }}
-          APPLE_ID: ${{ secrets['APPLE_ID'] }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets['APPLE_APP_SPECIFIC_PASSWORD'] }}
-          APPLE_TEAM_ID: ${{ secrets['APPLE_TEAM_ID'] }}
-          APPLE_API_KEY: ${{ secrets['APPLE_API_KEY'] }}
-          APPLE_API_KEY_ID: ${{ secrets['APPLE_API_KEY_ID'] }}
-          APPLE_API_ISSUER: ${{ secrets['APPLE_API_ISSUER'] }}
+        # Code signing placeholder: To sign and notarize macOS release builds, configure repository secrets and uncomment:
+        # env:
+        #   CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+        #   CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+        #   APPLE_ID: ${{ secrets.APPLE_ID }}
+        #   APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        #   APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        #   APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        #   APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           ./node_modules/.bin/electron-builder --mac dmg zip --x64
 
@@ -227,15 +229,16 @@ jobs:
           python3 scripts/prepare_desktop_bundle.py --target darwin-arm64
 
       - name: "Build macOS DMG and ZIP"
-        env:
-          CSC_LINK: ${{ secrets['MAC_CSC_LINK'] }}
-          CSC_KEY_PASSWORD: ${{ secrets['MAC_CSC_KEY_PASSWORD'] }}
-          APPLE_ID: ${{ secrets['APPLE_ID'] }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets['APPLE_APP_SPECIFIC_PASSWORD'] }}
-          APPLE_TEAM_ID: ${{ secrets['APPLE_TEAM_ID'] }}
-          APPLE_API_KEY: ${{ secrets['APPLE_API_KEY'] }}
-          APPLE_API_KEY_ID: ${{ secrets['APPLE_API_KEY_ID'] }}
-          APPLE_API_ISSUER: ${{ secrets['APPLE_API_ISSUER'] }}
+        # Code signing placeholder: To sign and notarize macOS release builds, configure repository secrets and uncomment:
+        # env:
+        #   CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+        #   CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+        #   APPLE_ID: ${{ secrets.APPLE_ID }}
+        #   APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        #   APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        #   APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        #   APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           ./node_modules/.bin/electron-builder --mac dmg zip --arm64
 
