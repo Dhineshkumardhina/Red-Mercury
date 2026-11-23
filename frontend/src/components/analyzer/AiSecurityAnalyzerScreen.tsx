@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
+import { UNSAFE_NavigationContext } from 'react-router-dom';
 import { FindingInput, AnalysisOutput } from '../../ai-security-analyzer/types';
 import { validateFindingInput } from '../../ai-security-analyzer/schema';
 import { analyzeFindingSynthetically } from '../../ai-security-analyzer/syntheticEngine';
@@ -58,11 +59,13 @@ const SAFE_DEFAULT_RESULT: AnalysisOutput = {
 };
 
 export const AiSecurityAnalyzerScreen: React.FC = () => {
+  const navContext = useContext(UNSAFE_NavigationContext);
   const [code, setCode] = useState<string>(VULNERABLE_SAMPLE_CODE);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<AnalysisOutput | null>(VULNERABLE_DEFAULT_RESULT);
   const [copiedFix, setCopiedFix] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [engineUsed, setEngineUsed] = useState<'offline_rule_engine' | 'external_ai'>('offline_rule_engine');
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
@@ -96,6 +99,11 @@ export const AiSecurityAnalyzerScreen: React.FC = () => {
         scanner_severity: 'HIGH',
       });
 
+      const modelName = result.ai_model || '';
+      const usedFallback =
+        !modelName || modelName.toLowerCase().includes('fallback') || modelName.toLowerCase().includes('offline');
+      setEngineUsed(usedFallback ? 'offline_rule_engine' : 'external_ai');
+
       setAnalysisResult({
         finding_summary: result.plain_language_explanation || result.finding_summary || '',
         vulnerability_category: result.vulnerability_category || 'Security Vulnerability',
@@ -106,11 +114,12 @@ export const AiSecurityAnalyzerScreen: React.FC = () => {
         missing_evidence: [],
         recommended_remediation: result.suggested_remediation || result.recommended_remediation || [],
         suggested_tests: result.suggested_targeted_tests || [],
-        limitations: [],
+        limitations: result.limitations || [],
       });
-      showToast('Scan complete');
+      showToast(usedFallback ? 'Analysis complete (Offline Rule Engine)' : 'Analysis complete (Cloud AI)');
     } catch {
       // Clean fallback for offline or local testing
+      setEngineUsed('offline_rule_engine');
       if (code.includes('f"SELECT') || code.includes("f'SELECT") || (code.includes('cursor.execute') && code.includes('+'))) {
         setAnalysisResult(VULNERABLE_DEFAULT_RESULT);
       } else if (code.includes('%s') && code.includes('cursor.execute(')) {
@@ -120,7 +129,7 @@ export const AiSecurityAnalyzerScreen: React.FC = () => {
         const synth = analyzeFindingSynthetically(validated.sanitizedInput || inputData);
         setAnalysisResult(synth);
       }
-      showToast('Scan complete');
+      showToast('Analysis complete (Offline Rule Engine)');
     } finally {
       setIsAnalyzing(false);
     }
@@ -167,12 +176,23 @@ export const AiSecurityAnalyzerScreen: React.FC = () => {
       {/* Top Header Ribbon */}
       <div className="px-4 lg:px-8 py-4 bg-white border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5 flex-wrap">
             <h1 className="text-lg font-bold text-slate-900 tracking-tight font-display">
               Patch Analyzer
             </h1>
             <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-xs font-semibold border border-slate-200">
               Code Security
+            </span>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${
+                engineUsed === 'external_ai'
+                  ? 'bg-blue-50 text-blue-700 border-blue-200'
+                  : 'bg-amber-50 text-amber-800 border-amber-200'
+              }`}
+            >
+              {engineUsed === 'external_ai'
+                ? 'External Gemini AI Active'
+                : 'Offline Deterministic Engine'}
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -309,8 +329,14 @@ export const AiSecurityAnalyzerScreen: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => {
-                            if (typeof window !== 'undefined') {
-                              window.location.href = '/verification';
+                            if (navContext?.navigator) {
+                              navContext.navigator.push('/verification');
+                            } else if (typeof window !== 'undefined') {
+                              if (window.electronAPI?.isElectron || window.location.protocol === 'file:') {
+                                window.location.hash = '#/verification';
+                              } else {
+                                window.location.href = '/verification';
+                              }
                             }
                           }}
                           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors cursor-pointer shadow-2xs"

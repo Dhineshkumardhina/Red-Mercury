@@ -25,7 +25,11 @@ from .models.finding import SecurityFinding
 from .models.verification import VerificationRun
 
 # Initialize structured logging
-setup_logging(level=settings.LOG_LEVEL, json_format=settings.LOG_FORMAT_JSON)
+setup_logging(
+    level=settings.LOG_LEVEL,
+    json_format=settings.LOG_FORMAT_JSON,
+    log_dir=settings.REDMERCURY_LOG_DIR,
+)
 logger = get_logger("redmercury.main")
 
 
@@ -37,40 +41,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         f"for {settings.ORGANIZATION}"
     )
 
-    # In local development with SQLite, ensure tables exist
+    # In local/desktop SQLite mode, recover interrupted startups, apply staged restores, and align Alembic head
     if settings.is_sqlite:
-        logger.info("Verifying local SQLite database schema...")
-        Base.metadata.create_all(bind=engine)
+        logger.info("Initializing and verifying local SQLite database schema...")
         try:
-            import os
-            import sqlalchemy as sa
-            from alembic import command
-            from alembic.config import Config
-            ini_candidates = [
-                "backend/alembic.ini",
-                "alembic.ini",
-                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "backend", "alembic.ini")),
-                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic.ini")),
-            ]
-            ini_path = next((p for p in ini_candidates if os.path.exists(p)), None)
-            if ini_path:
-                cfg = Config(ini_path)
-                has_alembic = False
-                current_rev = None
-                with engine.connect() as conn:
-                    inspector = sa.inspect(conn)
-                    has_alembic = "alembic_version" in inspector.get_table_names()
-                    if has_alembic:
-                        row = conn.execute(sa.text("SELECT version_num FROM alembic_version")).fetchone()
-                        current_rev = row[0] if row else None
-
-                HEAD_REVISION = "0014_add_durable_jobs_and_outbox"
-                if has_alembic and current_rev != HEAD_REVISION:
-                    command.upgrade(cfg, "head")
-                elif not has_alembic:
-                    command.stamp(cfg, "head")
+            from .core.backup import initialize_local_database
+            init_summary = initialize_local_database(engine_override=engine)
+            logger.info(f"Local SQLite initialization summary: {init_summary}")
         except Exception as exc:
-            logger.warning(f"Database schema auto-migration check skipped: {exc}")
+            logger.error(f"Local database initialization failed: {exc}")
+            raise
 
     # Reconcile any expired worker leases, undispatched outbox events, or legacy interrupted jobs on startup
     try:
@@ -88,9 +68,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_application() -> FastAPI:
     """FastAPI application factory."""
-    docs_url = "/docs" if (settings.DOCS_ENABLED and not settings.is_strict_env) else None
-    redoc_url = "/redoc" if (settings.DOCS_ENABLED and not settings.is_strict_env) else None
-    openapi_url = f"{settings.API_V1_PREFIX}/openapi.json" if (settings.DOCS_ENABLED and not settings.is_strict_env) else None
+    disable_docs = settings.is_strict_env or settings.is_desktop_env
+    docs_url = "/docs" if (settings.DOCS_ENABLED and not disable_docs) else None
+    redoc_url = "/redoc" if (settings.DOCS_ENABLED and not disable_docs) else None
+    openapi_url = f"{settings.API_V1_PREFIX}/openapi.json" if (settings.DOCS_ENABLED and not disable_docs) else None
 
     app = FastAPI(
         title=f"{settings.APP_NAME} API",
@@ -103,7 +84,7 @@ def create_application() -> FastAPI:
     )
 
     # 0. Trusted Host Header Validation (Guards against Host header injection / cache poisoning)
-    if settings.is_strict_env:
+    if settings.is_strict_env or settings.is_desktop_env:
         from starlette.middleware.trustedhost import TrustedHostMiddleware
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
 

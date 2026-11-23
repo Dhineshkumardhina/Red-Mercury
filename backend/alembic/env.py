@@ -21,7 +21,7 @@ if config.config_file_name is not None:
 # Set database URL dynamically from app settings unless explicitly overridden on Config
 existing_cfg_url = config.get_main_option("sqlalchemy.url")
 if not existing_cfg_url or existing_cfg_url == "sqlite:///./redmercury.db":
-    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

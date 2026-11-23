@@ -381,10 +381,12 @@ export async function ensureAuthenticated(): Promise<string | null> {
 }
 
 export function getApiBaseUrl(): string {
-  if (typeof window !== 'undefined') {
-    if ((window as any).electronAPI?.isElectron || window.location.protocol === 'file:') {
-      return 'http://127.0.0.1:8001';
-    }
+  if (typeof window !== 'undefined' && window.location.protocol === 'file:') {
+    return 'http://127.0.0.1:8001';
+  }
+  if (typeof window !== 'undefined' && (window as any).electronAPI?.isElectron) {
+    // Route through Electron's same-origin /api reverse proxy so dynamic localhost ports and cookies work seamlessly
+    return '';
   }
   return (import.meta as any).env?.VITE_API_BASE_URL || '';
 }
@@ -406,18 +408,23 @@ const AUTH_NO_REFRESH_PATHS = new Set([
   '/api/v1/auth/logout',
 ]);
 
-async function request<T>(endpoint: string, options: RequestInit = {}, isRetry = false): Promise<T> {
-  const method = (options.method || 'GET').toUpperCase();
+async function request<T>(
+  endpoint: string,
+  options: RequestInit & { timeoutMs?: number } = {},
+  isRetry = false
+): Promise<T> {
+  const { timeoutMs: customTimeoutMs, ...fetchOptions } = options;
+  const method = (fetchOptions.method || 'GET').toUpperCase();
   const isStateChanging = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
   const csrfToken = isStateChanging ? getCsrfToken() : null;
 
   const headers: Record<string, string> = {
     'Accept': 'application/json',
     ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
-    ...(options.headers as Record<string, string> || {}),
+    ...(fetchOptions.headers as Record<string, string> || {}),
   };
 
-  if (options.body && !(options.body instanceof FormData)) {
+  if (fetchOptions.body && !(fetchOptions.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json';
   }
 
@@ -427,7 +434,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}, isRetry =
     : `${baseUrl}${endpoint}`;
 
   const isAuthEndpoint = endpoint.startsWith('/api/v1/auth/');
-  const isGet = method === 'GET' && !options.body && !isAuthEndpoint;
+  const isGet = method === 'GET' && !fetchOptions.body && !isAuthEndpoint;
   const cacheKey = `cookie:${url}`;
 
   if (isGet) {
@@ -444,32 +451,34 @@ async function request<T>(endpoint: string, options: RequestInit = {}, isRetry =
 
   let timeoutId: any;
   let customController: AbortController | undefined;
-  let signal = options.signal;
+  let signal = fetchOptions.signal;
 
   if (!signal) {
     customController = new AbortController();
     signal = customController.signal;
+    const effectiveTimeout = customTimeoutMs ?? 20000;
     timeoutId = setTimeout(() => {
       customController?.abort();
-    }, 20000);
+    }, effectiveTimeout);
   }
 
   const execFetch = (async (): Promise<T> => {
     try {
       let res: Response;
+      const isElectronDesktop = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
       try {
         res = await fetch(url, {
-          ...options,
+          ...fetchOptions,
           credentials: 'include',
           signal,
           headers,
         });
       } catch {
-        // Seamless direct fallback: if Vite proxy is delayed or refused, try direct port 8001
-        if (baseUrl === '' && typeof window !== 'undefined' && !url.startsWith('http')) {
+        // Seamless direct fallback in browser dev mode if Vite proxy is delayed/refused (never bypass proxy in Electron)
+        if (!isElectronDesktop && baseUrl === '' && typeof window !== 'undefined' && !url.startsWith('http')) {
           try {
             res = await fetch(`http://127.0.0.1:8001${endpoint}`, {
-              ...options,
+              ...fetchOptions,
               credentials: 'include',
               signal,
               headers,
@@ -483,7 +492,9 @@ async function request<T>(endpoint: string, options: RequestInit = {}, isRetry =
           }
         } else {
           throw new ApiError(
-            `Unable to connect to Red Mercury service at ${url}. Please ensure the backend is running at http://127.0.0.1:8001.`,
+            isElectronDesktop
+              ? 'Local Red Mercury security engine is unreachable or restarting. Please wait or restart the engine.'
+              : `Unable to connect to Red Mercury service at ${url}. Please ensure the backend is running.`,
             0,
             'CONNECTION_REFUSED'
           );
@@ -621,6 +632,7 @@ export const api = {
     return request<ApiRepository>('/api/v1/repositories/ingest/upload', {
       method: 'POST',
       body: formData,
+      timeoutMs: 120000,
     });
   },
 
@@ -628,12 +640,14 @@ export const api = {
     request<ApiRepository>('/api/v1/repositories/ingest/git', {
       method: 'POST',
       body: JSON.stringify(data),
+      timeoutMs: 120000,
     }),
 
   ingestLocalDirectory: (data: { local_path: string; name?: string; default_branch?: string }) =>
     request<ApiRepository>('/api/v1/repositories/ingest/local', {
       method: 'POST',
       body: JSON.stringify(data),
+      timeoutMs: 120000,
     }),
 
   getIngestionStatus: (repoId: string) =>
@@ -880,6 +894,53 @@ export const api = {
 
   getFindingValidationsList: (findingId: string) =>
     request<FindingValidationResponse[]>(`/api/v1/findings/${encodeURIComponent(findingId)}/validations`),
+
+  // Phase 4: Local Capabilities, Offline Boundaries & Backup/Recovery
+  getSystemCapabilities: () =>
+    request<SystemCapabilities>('/api/v1/system/capabilities'),
+
+  getBackups: () =>
+    request<{ supported: boolean; backups: LocalBackupEntry[] }>('/api/v1/system/backups'),
+
+  createBackup: () =>
+    request<LocalBackupCreateResponse>('/api/v1/system/backups', {
+      method: 'POST',
+    }),
+
+  verifyBackup: (filename: string) =>
+    request<BackupVerificationResponse>('/api/v1/system/backups/verify', {
+      method: 'POST',
+      body: JSON.stringify({ filename }),
+    }),
+
+  restoreBackup: (filename: string, stageForRestart = true) =>
+    request<BackupRestoreResponse>('/api/v1/system/backups/restore', {
+      method: 'POST',
+      body: JSON.stringify({ filename, stage_for_restart: stageForRestart }),
+    }),
+
+  restoreUploadedBackup: (file: File, stageForRestart = true) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('stage_for_restart', String(stageForRestart));
+    return request<BackupRestoreResponse>('/api/v1/system/backups/restore-upload', {
+      method: 'POST',
+      body: formData,
+    });
+  },
+
+  getBackupDownloadUrl: (filename: string) =>
+    `${getApiBaseUrl()}/api/v1/system/backups/${encodeURIComponent(filename)}/download`,
+
+  // Phase 5: Cross-Platform Sandbox Verification Diagnostics & Approved Image Build
+  getSandboxStatus: () =>
+    request<SandboxDiagnostics>('/api/v1/system/sandbox/status'),
+
+  buildApprovedWorkerImage: () =>
+    request<{ built: boolean; image: string; digest?: string; architecture?: string; message: string }>(
+      '/api/v1/system/sandbox/build-worker-image',
+      { method: 'POST' }
+    ),
 };
 
 export interface GitHubInstallation {
@@ -1131,4 +1192,116 @@ export interface FindingValidationResponse {
   ai_model?: string;
   evidence_hash: string;
   recorded_at: string;
+}
+
+export interface CapabilityItem {
+  available: boolean;
+  requires_internet?: boolean;
+  requires_external_api?: boolean;
+  requires_docker?: boolean;
+  fail_closed?: boolean;
+  status: string;
+  mode?: string;
+  active_engine?: string;
+  image?: string;
+  tools?: string[];
+  message: string;
+}
+
+export interface SystemCapabilities {
+  environment: string;
+  offline_mode: boolean;
+  database: {
+    dialect: string;
+    wal_enabled: boolean;
+    local_backup_supported: boolean;
+  };
+  background_queue: {
+    engine: string;
+    redis_configured: boolean;
+    redis_required: boolean;
+  };
+  capabilities: {
+    offline_scanning: CapabilityItem;
+    external_ai: CapabilityItem;
+    github_integrations: CapabilityItem;
+    docker_verification: CapabilityItem;
+  };
+}
+
+export interface LocalBackupEntry {
+  filename: string;
+  size_bytes: number;
+  modified_at: string;
+  created_at?: string;
+  alembic_revision?: string | null;
+  includes_config: boolean;
+  app_version?: string;
+  valid_manifest: boolean;
+}
+
+export interface LocalBackupCreateResponse {
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  created_at: string;
+  alembic_revision?: string | null;
+  includes_config: boolean;
+  excludes_secrets: boolean;
+}
+
+export interface BackupVerificationResponse {
+  valid: boolean;
+  filename: string;
+  size_bytes: number;
+  sha256: string;
+  db_integrity: string;
+  manifest: Record<string, any>;
+}
+
+export interface BackupRestoreResponse {
+  status: string;
+  requires_restart: boolean;
+  archive_filename: string;
+  archive_sha256: string;
+  pre_restore_backup?: string | null;
+}
+
+export interface SandboxDiagnostics {
+  ready: boolean;
+  fail_closed: boolean;
+  installation: {
+    installed: boolean;
+    binary_path?: string | null;
+    version?: string | null;
+    message: string;
+  };
+  daemon: {
+    available: boolean;
+    server_version?: string | null;
+    os_type?: string | null;
+    architecture: string;
+    backend: string;
+    message: string;
+  };
+  architecture: {
+    host_platform: string;
+    host_architecture: string;
+    daemon_architecture: string;
+    supported: boolean;
+  };
+  worker_image: {
+    available: boolean;
+    image: string;
+    digest?: string | null;
+    digest_verified: boolean;
+    architecture?: string;
+    user?: string;
+    message: string;
+  };
+  sandbox_config: {
+    valid: boolean;
+    violations: string[];
+    enforced_invariants: string[];
+  };
 }

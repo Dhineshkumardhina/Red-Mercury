@@ -5,9 +5,11 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig } from 'vite';
 
+const enableCloudflarePlugin = !process.env.VITEST && process.env.VITE_TARGET !== 'desktop';
+
 export default defineConfig({
   base: './',
-  plugins: [react(), tailwindcss(), ...(process.env.VITEST ? [] : [cloudflare()])],
+  plugins: [react(), tailwindcss(), ...(enableCloudflarePlugin ? [cloudflare()] : [])],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

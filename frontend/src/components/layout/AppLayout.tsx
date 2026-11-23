@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate, Link, Navigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -10,9 +10,12 @@ import {
   Settings,
   LogOut,
   Shield,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import { Header } from './Header';
 import { useAuth } from '../../context/AuthContext';
+import type { BackendSupervisorStatus } from '../../types/electron';
 
 export interface AppLayoutProps {
   children: React.ReactNode;
@@ -25,6 +28,40 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const { user, isLoading, logout } = useAuth();
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [backendStatus, setBackendStatus] = useState<BackendSupervisorStatus | null>(null);
+  const [isRestartingBackend, setIsRestartingBackend] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.electronAPI?.getBackendStatus) {
+      return;
+    }
+    let mounted = true;
+    window.electronAPI.getBackendStatus()
+      .then((status) => {
+        if (mounted && status) setBackendStatus(status);
+      })
+      .catch(() => {});
+
+    const unsubscribe = window.electronAPI.onBackendStatus?.((status) => {
+      if (mounted) setBackendStatus(status);
+    });
+
+    return () => {
+      mounted = false;
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
+
+  const handleRestartDesktopBackend = async () => {
+    if (!window.electronAPI?.restartBackend || isRestartingBackend) return;
+    setIsRestartingBackend(true);
+    try {
+      const next = await window.electronAPI.restartBackend();
+      setBackendStatus(next);
+    } finally {
+      setIsRestartingBackend(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -208,6 +245,29 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
         <Header onOpenMobileMenu={() => setIsMobileMenuOpen(true)} />
 
         <main className="relative pt-12 lg:pt-0 flex-1">
+          {backendStatus && (backendStatus.state === 'error' || backendStatus.state === 'restarting') && (
+            <div className="mx-4 lg:mx-8 mt-4 p-3 rounded-lg border border-amber-300 bg-amber-50 text-amber-950 text-xs flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span className="truncate">
+                  {backendStatus.state === 'restarting'
+                    ? backendStatus.lastError || 'Recovering local Red Mercury security engine...'
+                    : `Local security engine error: ${backendStatus.lastError || 'Service stopped unexpectedly.'}`}
+                </span>
+              </div>
+              {backendStatus.state === 'error' && window.electronAPI?.restartBackend && (
+                <button
+                  type="button"
+                  onClick={handleRestartDesktopBackend}
+                  disabled={isRestartingBackend}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-900 text-white font-medium hover:bg-amber-800 shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isRestartingBackend ? 'animate-spin' : ''}`} />
+                  <span>{isRestartingBackend ? 'Restarting...' : 'Restart Engine'}</span>
+                </button>
+              )}
+            </div>
+          )}
           {children}
         </main>
       </div>

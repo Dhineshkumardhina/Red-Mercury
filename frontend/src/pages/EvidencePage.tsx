@@ -63,10 +63,22 @@ export const EvidencePage: React.FC = () => {
         reportResponse = await api.exportVerificationReport(targetRunId, format);
       }
 
-      // Download file in browser
       const mimeType = format === 'json' ? 'application/json' : 'text/markdown';
       const extension = format === 'json' ? 'json' : 'md';
       const filename = `red-mercury-${type}-report.${extension}`;
+
+      if (typeof window !== 'undefined' && window.electronAPI?.saveReport) {
+        const res = await window.electronAPI.saveReport({
+          defaultFilename: filename,
+          content: reportResponse.content,
+          format: format === 'json' ? 'json' : 'markdown',
+        });
+        if (res?.saved) {
+          showToast(`✓ Saved ${res.filename || filename}`);
+        }
+        return;
+      }
+
       const blob = new Blob([reportResponse.content], { type: mimeType });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

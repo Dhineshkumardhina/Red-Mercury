@@ -25,10 +25,18 @@ RUN pip install --no-cache-dir -r /sandbox/requirements.txt && \
     pip install --no-cache-dir pytest==8.1.1
 
 # Download, cryptographically verify SHA-256 checksum, and install pinned Gitleaks binary (SEC-20)
+ARG TARGETARCH
 ARG GITLEAKS_VERSION=8.18.2
-ARG GITLEAKS_SHA256=6298c9235dfc9278c14b28afd9b7fa4e6f4a289cb1974bd27949fc1e9122bdee
-RUN curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz && \
-    echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c - && \
+ARG GITLEAKS_SHA256_AMD64=6298c9235dfc9278c14b28afd9b7fa4e6f4a289cb1974bd27949fc1e9122bdee
+ARG GITLEAKS_SHA256_ARM64=4df25683f95b9e1dbb8cc71dac74d10067b8aba221e7f991e01cafa05bcbd030
+RUN ARCH="${TARGETARCH:-amd64}" && \
+    case "${ARCH}" in \
+      amd64) GL_ARCH="x64"; GL_SHA="${GITLEAKS_SHA256_AMD64}" ;; \
+      arm64) GL_ARCH="arm64"; GL_SHA="${GITLEAKS_SHA256_ARM64}" ;; \
+      *) echo "Unsupported target architecture: ${ARCH}" && exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${GL_ARCH}.tar.gz" -o gitleaks.tar.gz && \
+    echo "${GL_SHA}  gitleaks.tar.gz" | sha256sum -c - && \
     tar -xzf gitleaks.tar.gz gitleaks && \
     mv gitleaks /usr/local/bin/gitleaks && \
     chmod 755 /usr/local/bin/gitleaks && \

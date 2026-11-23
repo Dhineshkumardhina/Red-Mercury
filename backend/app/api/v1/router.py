@@ -11,6 +11,8 @@ from .endpoints.evidence import router as evidence_router
 from .endpoints.integrations import router as integrations_router
 from .endpoints.validation import router as validation_router
 from .endpoints.prioritization import router as prioritization_router
+from .endpoints.audit import router as audit_router
+from .endpoints.system import router as system_router
 
 api_v1_router = APIRouter()
 
@@ -25,5 +27,7 @@ api_v1_router.include_router(analyzer_router, prefix="", tags=["AI Security Anal
 api_v1_router.include_router(verification_router, prefix="/verifications", tags=["Fix Verification Engine"])
 api_v1_router.include_router(evidence_router, prefix="/evidence", tags=["Security Evidence Management"])
 api_v1_router.include_router(integrations_router, prefix="/integrations", tags=["GitHub & CI/CD Integrations"])
+api_v1_router.include_router(audit_router, prefix="/audit", tags=["Audit History"])
+api_v1_router.include_router(system_router, prefix="/system", tags=["System Capabilities & Backups"])
 
 

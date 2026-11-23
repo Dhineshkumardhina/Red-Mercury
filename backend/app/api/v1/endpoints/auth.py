@@ -183,8 +183,8 @@ def login(
 ) -> TokenResponse:
     normalized_email = user_in.email.strip().lower()
 
-    # 1. Block development seed account in production & staging deployments
-    if settings.is_strict_env and normalized_email == "dev@xerova.com":
+    # 1. Block development seed account in production, staging, and desktop deployments
+    if settings.is_dev_seed_blocked and normalized_email == "dev@xerova.com":
         record_audit_event(
             db=db,
             action="LOGIN_BLOCKED_DEV_SEED_IN_PRODUCTION",

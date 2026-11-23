@@ -9,6 +9,7 @@ Handles:
 """
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
@@ -417,6 +418,10 @@ def publish_pr_summary_comment(
     # Post via GitHub Client
     client = client_override
     if not client:
+        if settings.OFFLINE_MODE and not os.environ.get("FORCE_ONLINE"):
+            raise SecurityPolicyViolationError(
+                "Publishing PR summaries to GitHub requires internet access and is disabled while OFFLINE_MODE is enabled."
+            )
         creds = decrypt_credentials(integration.encrypted_credentials or "")
         token = creds.get("access_token")
         if not token:

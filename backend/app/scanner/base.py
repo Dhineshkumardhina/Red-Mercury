@@ -33,6 +33,20 @@ class ScannerStatus(str, Enum):
 def get_scanner_search_paths() -> List[str]:
     """Return directories where scanner binaries might reside."""
     paths = []
+    env_bin_dir = os.environ.get("REDMERCURY_BIN_DIR", "").strip()
+    if env_bin_dir and os.path.isdir(env_bin_dir) and env_bin_dir not in paths:
+        paths.append(env_bin_dir)
+
+    try:
+        sys_dir = os.path.dirname(sys.executable)
+        if os.path.isdir(sys_dir) and sys_dir not in paths:
+            paths.append(sys_dir)
+        sys_scripts = os.path.join(sys_dir, "Scripts")
+        if os.path.isdir(sys_scripts) and sys_scripts not in paths:
+            paths.append(sys_scripts)
+    except Exception:
+        pass
+
     try:
         userbase = site.getuserbase()
         for py_dir in ("Python314", "Python313", "Python312", "Python311", "Python310"):
@@ -42,13 +56,6 @@ def get_scanner_search_paths() -> List[str]:
         base_scripts = os.path.join(userbase, "Scripts")
         if os.path.isdir(base_scripts) and base_scripts not in paths:
             paths.append(base_scripts)
-    except Exception:
-        pass
-
-    try:
-        sys_scripts = os.path.join(os.path.dirname(sys.executable), "Scripts")
-        if os.path.isdir(sys_scripts) and sys_scripts not in paths:
-            paths.append(sys_scripts)
     except Exception:
         pass
 

@@ -18,14 +18,22 @@
     "frontend:lint": "npm --prefix frontend run lint",
     "lint": "npm --prefix frontend run lint",
     "build": "npm --prefix frontend run build",
+    "build:desktop": "cross-env VITE_TARGET=desktop npm --prefix frontend run build",
     "deploy": "npm --prefix frontend run deploy",
     "deploy:dry-run": "npm --prefix frontend run deploy:dry-run",
     "test": "npm --prefix frontend run test && python -m pytest tests/",
     "desktop": "cross-env NODE_ENV=production electron .",
     "desktop:dev": "concurrently -k -n \"BACKEND,FRONTEND,ELECTRON\" -c \"cyan,magenta,yellow\" \"npm run backend:dev\" \"npm run frontend:dev\" \"wait-on -t 30000 http://127.0.0.1:3000 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:3000 electron .\"",
-    "desktop:build": "npm run build && electron-builder --win --dir",
-    "desktop:dist": "npm run build && electron-builder --win nsis",
-    "desktop:portable": "npm run build && electron-builder --win portable"
+    "desktop:test": "node --test electron/security.test.cjs",
+    "desktop:icons": "python scripts/generate_app_icon.py",
+    "desktop:prepare:win": "python scripts/prepare_desktop_bundle.py --target win32-x64",
+    "desktop:prepare:mac-x64": "python3 scripts/prepare_desktop_bundle.py --target darwin-x64",
+    "desktop:prepare:mac-arm64": "python3 scripts/prepare_desktop_bundle.py --target darwin-arm64",
+    "desktop:build": "npm run build:desktop && npm run desktop:prepare:win && electron-builder --win --dir --x64",
+    "desktop:dist": "npm run build:desktop && npm run desktop:prepare:win && electron-builder --win nsis --x64",
+    "desktop:portable": "npm run build:desktop && npm run desktop:prepare:win && electron-builder --win portable --x64",
+    "desktop:mac:x64": "npm run build:desktop && npm run desktop:prepare:mac-x64 && electron-builder --mac dmg zip --x64",
+    "desktop:mac:arm64": "npm run build:desktop && npm run desktop:prepare:mac-arm64 && electron-builder --mac dmg zip --arm64"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
@@ -39,26 +47,39 @@
     "productName": "Red Mercury",
     "copyright": "Copyright © 2026 Xerova Digital Solutions",
     "directories": {
-      "output": "dist-electron"
+      "output": "dist-electron",
+      "buildResources": "build"
     },
+    "afterSign": "build/notarize.cjs",
     "files": [
       "electron/**/*",
       "frontend/dist/**/*",
-      "backend/**/*",
-      "build/**/*",
-      "package.json"
+      "package.json",
+      "!**/.env*",
+      "!**/*.map",
+      "!**/*.test.*",
+      "!**/__tests__/**"
+    ],
+    "extraResources": [
+      {
+        "from": "build/staging/active/backend",
+        "to": "backend"
+      },
+      {
+        "from": "build/staging/active/runtime",
+        "to": "runtime"
+      },
+      {
+        "from": "build/staging/active/bin",
+        "to": "bin"
+      }
     ],
     "win": {
       "icon": "build/icon.ico",
+      "signAndEditExecutable": true,
       "target": [
         {
           "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
           "arch": [
             "x64"
           ]
@@ -66,11 +87,62 @@
       ]
     },
     "nsis": {
+      "artifactName": "RedMercury-Setup-${arch}.${ext}",
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Red Mercury"
+      "shortcutName": "Red Mercury",
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "RedMercury-Portable-${arch}.${ext}"
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools",
+      "artifactName": "RedMercury-macOS-${arch}.${ext}",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "Red Mercury ${version}",
+      "icon": "build/icon.icns",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     }
   },
   "allowScripts": {

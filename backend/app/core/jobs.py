@@ -2501,8 +2501,8 @@ def reconcile_jobs_on_startup(
                 action="JOB_RECONCILIATION_COMPLETED",
                 resource_type="job_queue",
                 resource_identifier=component,
-                actor_id="system",
-                metadata=summary,
+                actor_id=None,
+                metadata={**summary, "actor": "system"},
             )
         except Exception:
             pass

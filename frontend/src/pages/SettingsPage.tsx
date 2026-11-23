@@ -1,6 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { api, BackendHealth } from '../services/api';
+import {
+  api,
+  BackendHealth,
+  LocalBackupEntry,
+  SandboxDiagnostics,
+  SystemCapabilities,
+} from '../services/api';
+import type { BackendSupervisorStatus } from '../types/electron';
+
+const PREFS_STORAGE_KEY = 'redmercury_ui_preferences';
 
 export const SettingsPage: React.FC = () => {
   const { user } = useAuth();
@@ -12,10 +21,31 @@ export const SettingsPage: React.FC = () => {
   const [sandboxTimeout, setSandboxTimeout] = useState('120');
   const [notifyOnCritical, setNotifyOnCritical] = useState(true);
 
-  // Backend Health Telemetry
+  // Backend Health, Capabilities, Backup & Desktop Supervisor Telemetry
   const [healthData, setHealthData] = useState<BackendHealth | null>(null);
+  const [capabilitiesData, setCapabilitiesData] = useState<SystemCapabilities | null>(null);
+  const [sandboxDiag, setSandboxDiag] = useState<SandboxDiagnostics | null>(null);
+  const [isBuildingWorkerImage, setIsBuildingWorkerImage] = useState(false);
+  const [sandboxNotice, setSandboxNotice] = useState<string | null>(null);
+  const [backups, setBackups] = useState<LocalBackupEntry[]>([]);
+  const [backupsSupported, setBackupsSupported] = useState(true);
+  const [isBackupBusy, setIsBackupBusy] = useState(false);
+  const [backupNotice, setBackupNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const restoreFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [desktopStatus, setDesktopStatus] = useState<BackendSupervisorStatus | null>(null);
+  const [isRestartingEngine, setIsRestartingEngine] = useState(false);
   const [isHealthLoading, setIsHealthLoading] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
+
+  const refreshBackupsList = async () => {
+    try {
+      const res = await api.getBackups();
+      setBackupsSupported(Boolean(res?.supported));
+      setBackups(Array.isArray(res?.backups) ? res.backups : []);
+    } catch {
+      // Ignore if unauthenticated or endpoint unavailable
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -29,13 +59,209 @@ export const SettingsPage: React.FC = () => {
         if (isMounted) setIsHealthLoading(false);
       });
 
-    return () => { isMounted = false; };
+    api.getSystemCapabilities()
+      .then(caps => {
+        if (isMounted && caps) setCapabilitiesData(caps);
+      })
+      .catch(() => {});
+
+    api.getSandboxStatus()
+      .then(diag => {
+        if (isMounted && diag) setSandboxDiag(diag);
+      })
+      .catch(() => {});
+
+    refreshBackupsList();
+
+    if (typeof window !== 'undefined' && window.electronAPI?.getPreferences) {
+      window.electronAPI.getPreferences()
+        .then(prefs => {
+          if (!isMounted || !prefs) return;
+          setStrictAstTaint(prefs.strictAstTaint);
+          setZeroSecrets(prefs.zeroSecrets);
+          setAutoMergeSafe(prefs.autoMergeSafe);
+          setNotifyOnCritical(prefs.notifyOnCritical);
+          setSandboxTimeout(String(prefs.sandboxTimeout));
+        })
+        .catch(() => {});
+    } else if (typeof window !== 'undefined') {
+      try {
+        const raw = window.localStorage.getItem(PREFS_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed.strictAstTaint === 'boolean') setStrictAstTaint(parsed.strictAstTaint);
+          if (typeof parsed.zeroSecrets === 'boolean') setZeroSecrets(parsed.zeroSecrets);
+          if (typeof parsed.autoMergeSafe === 'boolean') setAutoMergeSafe(parsed.autoMergeSafe);
+          if (typeof parsed.notifyOnCritical === 'boolean') setNotifyOnCritical(parsed.notifyOnCritical);
+          if (parsed.sandboxTimeout !== undefined) setSandboxTimeout(String(parsed.sandboxTimeout));
+        }
+      } catch {}
+    }
+
+    let unsubscribe: (() => void) | undefined;
+    if (typeof window !== 'undefined' && window.electronAPI?.getBackendStatus) {
+      window.electronAPI.getBackendStatus().then(st => {
+        if (isMounted && st) setDesktopStatus(st);
+      }).catch(() => {});
+      if (window.electronAPI.onBackendStatus) {
+        unsubscribe = window.electronAPI.onBackendStatus((st) => {
+          if (isMounted) setDesktopStatus(st);
+        });
+      }
+    }
+
+    return () => {
+      isMounted = false;
+      if (unsubscribe) unsubscribe();
+    };
   }, []);
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    const timeoutNum = Math.min(600, Math.max(10, Number.parseInt(sandboxTimeout, 10) || 120));
+    const prefsPayload = {
+      strictAstTaint,
+      zeroSecrets,
+      autoMergeSafe,
+      notifyOnCritical,
+      sandboxTimeout: timeoutNum,
+    };
+
+    if (typeof window !== 'undefined' && window.electronAPI?.savePreferences) {
+      try {
+        const saved = await window.electronAPI.savePreferences(prefsPayload);
+        setSandboxTimeout(String(saved.sandboxTimeout));
+      } catch {}
+    } else if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefsPayload));
+      } catch {}
+    }
+
     setSavedToast(true);
     setTimeout(() => setSavedToast(false), 3000);
+  };
+
+  const handleRestartEngine = async () => {
+    if (!window.electronAPI?.restartBackend || isRestartingEngine) return;
+    setIsRestartingEngine(true);
+    try {
+      const st = await window.electronAPI.restartBackend();
+      setDesktopStatus(st);
+      const h = await api.getHealth().catch(() => null);
+      if (h) setHealthData(h);
+      const caps = await api.getSystemCapabilities().catch(() => null);
+      if (caps) setCapabilitiesData(caps);
+    } finally {
+      setIsRestartingEngine(false);
+    }
+  };
+
+  const handleBuildWorkerImage = async () => {
+    if (isBuildingWorkerImage) return;
+    setIsBuildingWorkerImage(true);
+    setSandboxNotice(null);
+    try {
+      const res = await api.buildApprovedWorkerImage();
+      setSandboxNotice(res.message);
+      const diag = await api.getSandboxStatus().catch(() => null);
+      if (diag) setSandboxDiag(diag);
+    } catch (err: any) {
+      setSandboxNotice(err?.message || 'Worker image build failed.');
+    } finally {
+      setIsBuildingWorkerImage(false);
+    }
+  };
+
+  const handleCreateBackup = async () => {
+    if (isBackupBusy) return;
+    setIsBackupBusy(true);
+    setBackupNotice(null);
+    try {
+      const created = await api.createBackup();
+      setBackupNotice({
+        kind: 'ok',
+        text: `Created verified backup ${created.filename} (SHA-256: ${created.sha256.slice(0, 12)}...).`,
+      });
+      await refreshBackupsList();
+    } catch (err: any) {
+      setBackupNotice({ kind: 'err', text: err?.message || 'Backup creation failed.' });
+    } finally {
+      setIsBackupBusy(false);
+    }
+  };
+
+  const handleVerifyBackup = async (filename: string) => {
+    if (isBackupBusy) return;
+    setIsBackupBusy(true);
+    setBackupNotice(null);
+    try {
+      const res = await api.verifyBackup(filename);
+      setBackupNotice({
+        kind: 'ok',
+        text: `${res.filename} verified cleanly (DB integrity: ${res.db_integrity}, SHA-256: ${res.sha256.slice(0, 12)}...).`,
+      });
+    } catch (err: any) {
+      setBackupNotice({ kind: 'err', text: err?.message || `Verification failed for ${filename}.` });
+    } finally {
+      setIsBackupBusy(false);
+    }
+  };
+
+  const handleRestoreBackup = async (filename: string) => {
+    if (isBackupBusy) return;
+    setIsBackupBusy(true);
+    setBackupNotice(null);
+    try {
+      const res = await api.restoreBackup(filename, true);
+      if (res.requires_restart && window.electronAPI?.restartBackend) {
+        const st = await window.electronAPI.restartBackend();
+        setDesktopStatus(st);
+        setBackupNotice({
+          kind: 'ok',
+          text: `Restored from ${res.archive_filename} and restarted local security engine. Pre-restore snapshot: ${res.pre_restore_backup || 'none'}.`,
+        });
+      } else {
+        setBackupNotice({
+          kind: 'ok',
+          text: `Restore staged from ${res.archive_filename}. Restart backend service to apply cleanly.`,
+        });
+      }
+      await refreshBackupsList();
+    } catch (err: any) {
+      setBackupNotice({ kind: 'err', text: err?.message || `Restore failed for ${filename}.` });
+    } finally {
+      setIsBackupBusy(false);
+    }
+  };
+
+  const handleUploadRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || isBackupBusy) return;
+    setIsBackupBusy(true);
+    setBackupNotice(null);
+    try {
+      const res = await api.restoreUploadedBackup(file, true);
+      if (res.requires_restart && window.electronAPI?.restartBackend) {
+        const st = await window.electronAPI.restartBackend();
+        setDesktopStatus(st);
+        setBackupNotice({
+          kind: 'ok',
+          text: `Verified and restored ${file.name}; local engine restarted cleanly.`,
+        });
+      } else {
+        setBackupNotice({
+          kind: 'ok',
+          text: `Verified and staged ${file.name}. Restart backend to apply cleanly.`,
+        });
+      }
+      await refreshBackupsList();
+    } catch (err: any) {
+      setBackupNotice({ kind: 'err', text: err?.message || 'Uploaded archive failed verification or restore.' });
+    } finally {
+      setIsBackupBusy(false);
+    }
   };
 
   return (
@@ -110,9 +336,273 @@ export const SettingsPage: React.FC = () => {
 
             <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
               <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">Environment</span>
-              <span className="font-bold text-slate-800 uppercase">{healthData?.environment || 'PRODUCTION'}</span>
+              <span className="font-bold text-slate-800 uppercase">{healthData?.environment || 'DESKTOP'}</span>
             </div>
           </div>
+
+          {desktopStatus && (
+            <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="text-slate-600">
+                <span className="font-semibold text-slate-800">Local Desktop Engine:</span>{' '}
+                <span className="font-mono">{desktopStatus.state.toUpperCase()}</span>
+                {desktopStatus.port ? ` (127.0.0.1:${desktopStatus.port})` : ''}
+                {desktopStatus.lastError ? ` — ${desktopStatus.lastError}` : ''}
+              </div>
+              {window.electronAPI?.restartBackend && (
+                <button
+                  type="button"
+                  onClick={handleRestartEngine}
+                  disabled={isRestartingEngine}
+                  className="px-3 py-1.5 rounded-md border border-slate-200 bg-white hover:bg-slate-50 text-slate-800 font-medium text-xs cursor-pointer disabled:opacity-50"
+                >
+                  {isRestartingEngine ? 'Restarting Engine...' : 'Restart Local Engine'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 1B. Runtime Capabilities & Offline Mode Boundaries */}
+        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">Runtime Capabilities &amp; Offline Boundaries</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Clear separation between offline local analysis, external APIs, GitHub, and Docker sandboxing
+              </p>
+            </div>
+            <span
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
+                (capabilitiesData?.offline_mode ?? healthData?.offline_mode ?? true)
+                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                  : 'bg-blue-50 text-blue-700 border-blue-200'
+              }`}
+            >
+              {(capabilitiesData?.offline_mode ?? healthData?.offline_mode ?? true)
+                ? 'Offline-First Mode'
+                : 'Connected Mode'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            <div className="p-3.5 rounded-lg border border-emerald-200 bg-emerald-50/40 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-900">Offline Security Scanning</span>
+                <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-semibold">
+                  AVAILABLE LOCALLY
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600">
+                {capabilitiesData?.capabilities.offline_scanning.message ||
+                  'Static, secret, and deterministic rule analysis operate locally without internet access.'}
+              </p>
+            </div>
+
+            <div
+              className={`p-3.5 rounded-lg border space-y-1 ${
+                capabilitiesData?.capabilities.external_ai.available
+                  ? 'border-blue-200 bg-blue-50/40'
+                  : 'border-slate-200 bg-slate-50'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-900">External AI (Gemini API)</span>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                    capabilitiesData?.capabilities.external_ai.available
+                      ? 'bg-blue-100 text-blue-800'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}
+                >
+                  {capabilitiesData?.capabilities.external_ai.available
+                    ? 'CONNECTED'
+                    : capabilitiesData?.capabilities.external_ai.status === 'missing_api_key'
+                    ? 'KEY NOT SET (LOCAL FALLBACK)'
+                    : 'DISABLED OFFLINE (LOCAL FALLBACK)'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600">
+                {capabilitiesData?.capabilities.external_ai.message ||
+                  'External AI requires internet access and a configured GEMINI_API_KEY. Deterministic local rule analysis handles requests offline.'}
+              </p>
+            </div>
+
+            <div
+              className={`p-3.5 rounded-lg border space-y-1 ${
+                capabilitiesData?.capabilities.github_integrations.available
+                  ? 'border-blue-200 bg-blue-50/40'
+                  : 'border-slate-200 bg-slate-50'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-900">GitHub &amp; Remote Git</span>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                    capabilitiesData?.capabilities.github_integrations.available
+                      ? 'bg-blue-100 text-blue-800'
+                      : 'bg-slate-200 text-slate-700'
+                  }`}
+                >
+                  {capabilitiesData?.capabilities.github_integrations.available ? 'ONLINE ENABLED' : 'REQUIRES INTERNET'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600">
+                {capabilitiesData?.capabilities.github_integrations.message ||
+                  'PR syncing and remote HTTPS cloning require internet access; local folders and ZIP uploads work offline.'}
+              </p>
+            </div>
+
+            <div
+              className={`p-3.5 rounded-lg border space-y-2 ${
+                (sandboxDiag?.ready ?? capabilitiesData?.capabilities.docker_verification.available)
+                  ? 'border-emerald-200 bg-emerald-50/40'
+                  : 'border-slate-200 bg-slate-50'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-slate-900">Local Docker Verification</span>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                    (sandboxDiag?.ready ?? capabilitiesData?.capabilities.docker_verification.available)
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-rose-100 text-rose-800'
+                  }`}
+                >
+                  {sandboxDiag?.ready
+                    ? 'SANDBOX READY'
+                    : sandboxDiag?.daemon.available
+                    ? 'IMAGE MISSING / UNVERIFIED'
+                    : 'UNAVAILABLE (FAIL-CLOSED)'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600">
+                {sandboxDiag?.worker_image?.message ||
+                  sandboxDiag?.daemon?.message ||
+                  capabilitiesData?.capabilities.docker_verification.message ||
+                  'Isolated container verification runs locally via Docker Desktop and fails closed if unavailable.'}
+              </p>
+              {sandboxDiag && (
+                <div className="text-[10px] font-mono text-slate-500 space-y-0.5">
+                  <div>
+                    Backend: {sandboxDiag.daemon.backend} • Arch: {sandboxDiag.architecture.daemon_architecture} (
+                    {sandboxDiag.architecture.supported ? 'supported' : 'unsupported'})
+                  </div>
+                  <div>
+                    Image: {sandboxDiag.worker_image.image} • Digest Verified:{' '}
+                    {sandboxDiag.worker_image.digest_verified ? 'YES' : 'NO'}
+                  </div>
+                </div>
+              )}
+              {sandboxDiag?.daemon.available && !sandboxDiag?.worker_image.available && (
+                <button
+                  type="button"
+                  disabled={isBuildingWorkerImage}
+                  onClick={handleBuildWorkerImage}
+                  className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  {isBuildingWorkerImage ? 'Building Worker Image...' : 'Build Approved Worker Image'}
+                </button>
+              )}
+              {sandboxNotice && <div className="text-[11px] text-slate-700 font-medium">{sandboxNotice}</div>}
+            </div>
+          </div>
+        </div>
+
+        {/* 1C. Local Database & Configuration Backup / Recovery */}
+        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">Local Backup &amp; Recovery</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                WAL-consistent SQLite snapshots &amp; non-secret configuration archives verified with SHA-256 checksums
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                ref={restoreFileInputRef}
+                type="file"
+                accept=".rmbkp"
+                onChange={handleUploadRestore}
+                className="hidden"
+              />
+              <button
+                type="button"
+                disabled={!backupsSupported || isBackupBusy}
+                onClick={() => restoreFileInputRef.current?.click()}
+                className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer disabled:opacity-50"
+              >
+                Import &amp; Restore .rmbkp
+              </button>
+              <button
+                type="button"
+                disabled={!backupsSupported || isBackupBusy}
+                onClick={handleCreateBackup}
+                className="px-3.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+              >
+                {isBackupBusy ? 'Working...' : 'Create Backup'}
+              </button>
+            </div>
+          </div>
+
+          {backupNotice && (
+            <div
+              className={`p-3 rounded-lg border text-xs ${
+                backupNotice.kind === 'ok'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                  : 'bg-rose-50 border-rose-200 text-rose-800'
+              }`}
+            >
+              {backupNotice.text}
+            </div>
+          )}
+
+          {backups.length === 0 ? (
+            <p className="text-xs text-slate-500 py-2">
+              No local backups created yet. Click <strong>Create Backup</strong> to snapshot your SQLite database and preferences.
+            </p>
+          ) : (
+            <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden">
+              {backups.map((b) => (
+                <div
+                  key={b.filename}
+                  className="px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs bg-slate-50/40"
+                >
+                  <div>
+                    <div className="font-mono font-semibold text-slate-900">{b.filename}</div>
+                    <div className="text-[11px] text-slate-500">
+                      {Math.max(1, Math.round(b.size_bytes / 1024))} KB • Revision {b.alembic_revision || 'unknown'} •{' '}
+                      {b.includes_config ? 'DB + Config' : 'DB only'}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isBackupBusy}
+                      onClick={() => handleVerifyBackup(b.filename)}
+                      className="px-2.5 py-1 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-medium cursor-pointer"
+                    >
+                      Verify
+                    </button>
+                    <a
+                      href={api.getBackupDownloadUrl(b.filename)}
+                      download={b.filename}
+                      className="px-2.5 py-1 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-medium"
+                    >
+                      Download
+                    </a>
+                    <button
+                      type="button"
+                      disabled={isBackupBusy}
+                      onClick={() => handleRestoreBackup(b.filename)}
+                      className="px-2.5 py-1 rounded border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 font-semibold cursor-pointer"
+                    >
+                      Restore
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* 2. Active Operator Profile */}

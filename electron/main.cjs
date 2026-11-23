@@ -1,28 +1,52 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, safeStorage } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
 const http = require('http');
 const fs = require('fs');
 const {
+  ALLOWED_IPC_INVOKE_CHANNELS,
+  DEFAULT_USER_PREFERENCES,
+  assertAllowedIpcChannel,
+  isTrustedLocalHostHeader,
   parseBackendPort,
-  buildBackendArgs,
-  detectPythonExecutable,
   resolveStaticAssetPath,
   isSafeExternalUrl,
   isTrustedOriginUrl,
-  terminateBackendProcess,
+  validateSaveReportPayload,
+  sanitizeUserPreferences,
+  resolveDesktopStoragePaths,
+  loadOrCreateEncryptedDesktopKeys,
+  scrubLogText,
+  BackendSupervisor,
 } = require('./security.cjs');
 
 let mainWindow = null;
 let splashWindow = null;
-let backendProcess = null;
 let uiServer = null;
 let uiServerPort = null;
+let storagePaths = null;
+let backendSupervisor = null;
 
-const BACKEND_PORT = parseBackendPort(process.env.PORT, 8001);
-const BACKEND_HOST = '127.0.0.1';
-const HEALTH_URL = `http://${BACKEND_HOST}:${BACKEND_PORT}/api/v1/health`;
 const isDev = process.env.NODE_ENV === 'development';
+const BACKEND_HOST = '127.0.0.1';
+const PREFERRED_BACKEND_PORT = process.env.PORT ? parseBackendPort(process.env.PORT, 8001) : 8001;
+const approvedLocalDirectories = new Set();
+
+function appendDesktopLog(level, message) {
+  const line = `[${new Date().toISOString()}] [${String(level).toUpperCase()}] ${scrubLogText(message)}`;
+  if (level === 'error') {
+    console.error(line);
+  } else if (level === 'warn') {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
+
+  if (storagePaths && storagePaths.electronLogFile) {
+    try {
+      fs.appendFileSync(storagePaths.electronLogFile, line + '\n', 'utf8');
+    } catch {}
+  }
+}
 
 function getTrustedAppOrigins() {
   const origins = [];
@@ -42,6 +66,40 @@ function assertTrustedIpcSender(event) {
   }
 }
 
+function registerSecureIpcHandler(channel, handler) {
+  assertAllowedIpcChannel(channel);
+  ipcMain.handle(channel, async (event, ...args) => {
+    assertTrustedIpcSender(event);
+    return await handler(event, ...args);
+  });
+}
+
+function broadcastBackendStatus(status) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const currentUrl = mainWindow.webContents.getURL();
+    if (isTrustedOriginUrl(currentUrl, getTrustedAppOrigins())) {
+      mainWindow.webContents.send('backend:status', status);
+    }
+  } catch {}
+}
+
+function readJsonFileSafe(filePath, fallback) {
+  try {
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    }
+  } catch {}
+  return fallback;
+}
+
+function writeJsonFileSafe(filePath, data) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), process.platform === 'win32' ? 'utf8' : { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmpPath, filePath);
+}
+
 // Ensure single instance lock
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -53,6 +111,50 @@ if (!gotTheLock) {
       mainWindow.focus();
     }
   });
+}
+
+function configureApplicationMenu() {
+  if (process.platform === 'darwin') {
+    const template = [
+      {
+        label: app.name,
+        submenu: [
+          { role: 'about' },
+          { type: 'separator' },
+          { role: 'services' },
+          { type: 'separator' },
+          { role: 'hide' },
+          { role: 'hideOthers' },
+          { role: 'unhide' },
+          { type: 'separator' },
+          { role: 'quit' },
+        ],
+      },
+      {
+        label: 'Edit',
+        submenu: [
+          { role: 'undo' },
+          { role: 'redo' },
+          { type: 'separator' },
+          { role: 'cut' },
+          { role: 'copy' },
+          { role: 'paste' },
+          { role: 'selectAll' },
+        ],
+      },
+      {
+        label: 'Window',
+        submenu: [
+          { role: 'minimize' },
+          { role: 'zoom' },
+          { role: 'close' },
+        ],
+      },
+    ];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  } else {
+    Menu.setApplicationMenu(null);
+  }
 }
 
 /**
@@ -74,6 +176,11 @@ function createSplashScreen() {
       webSecurity: true,
     },
   });
+
+  splashWindow.webContents.on('will-navigate', (event) => {
+    event.preventDefault();
+  });
+  splashWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   const splashHtml = `
   <!DOCTYPE html>
@@ -108,11 +215,7 @@ function createSplashScreen() {
         box-shadow: 0 10px 25px rgba(2, 132, 199, 0.4);
         margin-bottom: 20px;
       }
-      .shield-icon {
-        width: 42px;
-        height: 42px;
-        fill: white;
-      }
+      .shield-icon { width: 42px; height: 42px; fill: white; }
       h1 {
         font-size: 24px;
         font-weight: 700;
@@ -122,12 +225,7 @@ function createSplashScreen() {
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
       }
-      p.subtitle {
-        font-size: 13px;
-        color: #94a3b8;
-        margin-bottom: 28px;
-        text-align: center;
-      }
+      p.subtitle { font-size: 13px; color: #94a3b8; margin-bottom: 28px; text-align: center; }
       .status-box {
         display: flex;
         align-items: center;
@@ -146,16 +244,8 @@ function createSplashScreen() {
         animation: spin 0.8s linear infinite;
       }
       @keyframes spin { to { transform: rotate(360deg); } }
-      .status-text {
-        font-size: 13px;
-        color: #cbd5e1;
-      }
-      .version-tag {
-        position: absolute;
-        bottom: 12px;
-        font-size: 11px;
-        color: #64748b;
-      }
+      .status-text { font-size: 13px; color: #cbd5e1; }
+      .version-tag { position: absolute; bottom: 12px; font-size: 11px; color: #64748b; }
     </style>
   </head>
   <body>
@@ -179,89 +269,87 @@ function createSplashScreen() {
 }
 
 /**
- * Checks if FastAPI backend is healthy
+ * Resolve root directory for packaged vs unpacked development execution.
  */
-function checkBackendHealth() {
-  return new Promise((resolve) => {
-    const req = http.get(HEALTH_URL, { timeout: 1500 }, (res) => {
-      if (res.statusCode === 200) {
-        resolve(true);
-      } else {
-        resolve(false);
-      }
-    });
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(false);
-    });
+function getAppRootDir() {
+  if (!app.isPackaged) {
+    return path.resolve(__dirname, '..');
+  }
+  const asarUnpacked = path.join(process.resourcesPath, 'app.asar.unpacked');
+  if (fs.existsSync(path.join(asarUnpacked, 'backend'))) {
+    return asarUnpacked;
+  }
+  const unpackedDir = path.join(process.resourcesPath, 'app');
+  if (fs.existsSync(path.join(unpackedDir, 'backend'))) {
+    return unpackedDir;
+  }
+  return process.resourcesPath;
+}
+
+/**
+ * Initialize secure OS-appropriate storage, encrypted keys, and backend supervisor.
+ */
+function initializeDesktopServices() {
+  storagePaths = resolveDesktopStoragePaths(app.getPath('userData'));
+
+  const existingAppConfig = readJsonFileSafe(storagePaths.appConfigFile, null);
+  const nowIso = new Date().toISOString();
+  const appConfig = {
+    version: app.getVersion(),
+    offlineMode: true,
+    preferredPort: PREFERRED_BACKEND_PORT,
+    ...(existingAppConfig && typeof existingAppConfig === 'object' ? existingAppConfig : {}),
+    initializedAt: existingAppConfig?.initializedAt || nowIso,
+    firstRunCompleted: true,
+    updatedAt: nowIso,
+  };
+  writeJsonFileSafe(storagePaths.appConfigFile, appConfig);
+
+  if (!fs.existsSync(storagePaths.preferencesFile)) {
+    writeJsonFileSafe(storagePaths.preferencesFile, DEFAULT_USER_PREFERENCES);
+  }
+
+  const keys = loadOrCreateEncryptedDesktopKeys({
+    secretsFile: storagePaths.secretsFile,
+    safeStorage,
+    fsMod: fs,
+    platform: process.platform,
+  });
+
+  const rootDir = getAppRootDir();
+  const backendDir = path.join(rootDir, 'backend');
+
+  backendSupervisor = new BackendSupervisor({
+    rootDir,
+    backendDir,
+    preferredPort: Number.isInteger(appConfig.preferredPort) ? appConfig.preferredPort : PREFERRED_BACKEND_PORT,
+    logFn: appendDesktopLog,
+    envOverrides: {
+      APP_ENV: isDev ? 'development' : 'desktop',
+      DEBUG: 'false',
+      OFFLINE_MODE: appConfig.offlineMode === false ? 'false' : 'true',
+      SECRET_KEY: keys.secretKey,
+      ENCRYPTION_KEY: keys.encryptionKey,
+      REDMERCURY_DATA_DIR: storagePaths.dataDir,
+      REDMERCURY_CONFIG_DIR: storagePaths.configDir,
+      REDMERCURY_LOG_DIR: storagePaths.logsDir,
+      WORKSPACE_ROOT: storagePaths.workspacesDir,
+      WORKER_TEMP_DIR: storagePaths.workerTempDir,
+      TMPDIR: storagePaths.verifyTempDir,
+      TEMP: storagePaths.verifyTempDir,
+      TMP: storagePaths.verifyTempDir,
+      REDMERCURY_BIN_DIR: path.join(rootDir, 'bin'),
+      JOB_DISPATCH_MODE: 'queue_only',
+    },
+  });
+
+  backendSupervisor.on('status', (status) => {
+    broadcastBackendStatus(status);
   });
 }
 
 /**
- * Spawns the Python backend if not already running
- */
-async function startBackend() {
-  const isHealthy = await checkBackendHealth();
-  if (isHealthy) {
-    console.log('[Electron] Backend is already running and healthy.');
-    return;
-  }
-
-  console.log('[Electron] Starting local Python FastAPI backend...');
-
-  const rootDir = app.isPackaged
-    ? path.join(process.resourcesPath, 'app')
-    : path.resolve(__dirname, '..');
-
-  const backendDir = path.join(rootDir, 'backend');
-
-  // Detect Python environment (Windows & POSIX virtualenv or system python)
-  const pythonCmd = detectPythonExecutable(rootDir, process.platform);
-  const args = buildBackendArgs(backendDir, BACKEND_HOST, BACKEND_PORT);
-
-  try {
-    backendProcess = spawn(pythonCmd, args, {
-      cwd: rootDir,
-      env: {
-        ...process.env,
-        PYTHONUNBUFFERED: '1',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false,
-    });
-
-    backendProcess.stdout.on('data', (data) => {
-      console.log(`[FastAPI] ${data.toString().trim()}`);
-    });
-
-    backendProcess.stderr.on('data', (data) => {
-      console.warn(`[FastAPI Err] ${data.toString().trim()}`);
-    });
-
-    backendProcess.on('exit', (code, signal) => {
-      console.log(`[FastAPI] Process exited with code ${code} and signal ${signal}`);
-      backendProcess = null;
-    });
-  } catch (err) {
-    console.error('[Electron] Failed to spawn python backend process:', err);
-  }
-}
-
-/**
- * Polls backend until it is up and running
- */
-async function waitForBackend(maxRetries = 35, interval = 600) {
-  for (let i = 0; i < maxRetries; i++) {
-    const ready = await checkBackendHealth();
-    if (ready) return true;
-    await new Promise((r) => setTimeout(r, interval));
-  }
-  return false;
-}
-
-/**
- * Starts internal lightweight web server for UI & reverse proxy
+ * Starts internal lightweight web server for UI & same-origin /api reverse proxy.
  */
 function startStaticUiServer(distPath) {
   return new Promise((resolve) => {
@@ -279,28 +367,57 @@ function startStaticUiServer(distPath) {
     };
 
     const server = http.createServer((req, res) => {
-      // Reverse-proxy /api directly to FastAPI backend
+      const boundAddr = server.address();
+      const listenPort = boundAddr && typeof boundAddr === 'object' ? boundAddr.port : null;
+      if (listenPort && !isTrustedLocalHostHeader(req.headers.host, listenPort)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=UTF-8' });
+        res.end('Untrusted Host header rejected');
+        return;
+      }
+
+      // Reverse-proxy /api directly to the supervised localhost FastAPI backend
       if (req.url && req.url.startsWith('/api/')) {
+        const targetPort = backendSupervisor && backendSupervisor.port ? backendSupervisor.port : null;
+        if (!targetPort) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'BACKEND_STARTING',
+                message: 'Red Mercury local security engine is starting or unavailable.',
+              },
+            })
+          );
+          return;
+        }
+
         const proxyReq = http.request(
           {
             hostname: BACKEND_HOST,
-            port: BACKEND_PORT,
+            port: targetPort,
             path: req.url,
             method: req.method,
             headers: {
               ...req.headers,
-              host: `${BACKEND_HOST}:${BACKEND_PORT}`,
+              host: `${BACKEND_HOST}:${targetPort}`,
             },
           },
           (proxyRes) => {
-            res.writeHead(proxyRes.statusCode, proxyRes.headers);
+            res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
             proxyRes.pipe(res, { end: true });
           }
         );
 
         proxyReq.on('error', (err) => {
           res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: 'Backend service unavailable: ' + err.message } }));
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'BACKEND_UNAVAILABLE',
+                message: `Local backend service unavailable: ${scrubLogText(err.message)}`,
+              },
+            })
+          );
         });
 
         req.pipe(proxyReq, { end: true });
@@ -334,16 +451,16 @@ function startStaticUiServer(distPath) {
             'X-Frame-Options': 'DENY',
             'Referrer-Policy': 'no-referrer',
             'Content-Security-Policy':
-              `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://${BACKEND_HOST}:${BACKEND_PORT}; object-src 'none'; base-uri 'self'; frame-ancestors 'none';`,
+              "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
           });
           res.end(content);
         }
       });
     });
 
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(0, BACKEND_HOST, () => {
       const port = server.address().port;
-      console.log(`[Electron] Internal UI server listening on http://127.0.0.1:${port}`);
+      appendDesktopLog('info', `[Electron] Internal UI server listening on http://${BACKEND_HOST}:${port}`);
       resolve({ server, port });
     });
   });
@@ -370,25 +487,28 @@ async function createMainWindow() {
     },
   });
 
-  mainWindow.removeMenu();
+  if (process.platform !== 'darwin') {
+    mainWindow.removeMenu();
+  }
 
   if (isDev && process.env.VITE_DEV_SERVER_URL) {
-    console.log(`[Electron] Loading Vite dev server at ${process.env.VITE_DEV_SERVER_URL}`);
+    appendDesktopLog('info', `[Electron] Loading Vite dev server at ${process.env.VITE_DEV_SERVER_URL}`);
     await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    const rootDir = app.isPackaged
-      ? path.join(process.resourcesPath, 'app')
-      : path.resolve(__dirname, '..');
-    const distPath = path.join(rootDir, 'frontend', 'dist');
-
-    if (!fs.existsSync(distPath)) {
-      console.error(`[Electron] Frontend dist path does not exist at ${distPath}`);
+    if (!uiServer) {
+      const candidates = [
+        path.resolve(__dirname, '..', 'frontend', 'dist'),
+        path.join(getAppRootDir(), 'frontend', 'dist'),
+      ];
+      const distPath = candidates.find((p) => fs.existsSync(p)) || candidates[0];
+      if (!fs.existsSync(distPath)) {
+        appendDesktopLog('error', `[Electron] Frontend dist path does not exist at ${distPath}`);
+      }
+      const { server, port } = await startStaticUiServer(distPath);
+      uiServer = server;
+      uiServerPort = port;
     }
-
-    const { server, port } = await startStaticUiServer(distPath);
-    uiServer = server;
-    uiServerPort = port;
-    await mainWindow.loadURL(`http://127.0.0.1:${port}`);
+    await mainWindow.loadURL(`http://${BACKEND_HOST}:${uiServerPort}`);
   }
 
   mainWindow.once('ready-to-show', () => {
@@ -398,12 +518,15 @@ async function createMainWindow() {
     }
     mainWindow.show();
     mainWindow.focus();
+    if (backendSupervisor) {
+      broadcastBackendStatus(backendSupervisor.getStatus());
+    }
   });
 
   // Restrict in-window navigation strictly to trusted local application origins
   mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
     if (!isTrustedOriginUrl(navigationUrl, getTrustedAppOrigins())) {
-      console.warn(`[Electron] Blocked unauthorized navigation to: ${navigationUrl}`);
+      appendDesktopLog('warn', `[Electron] Blocked unauthorized navigation to: ${navigationUrl}`);
       event.preventDefault();
     }
   });
@@ -421,26 +544,22 @@ async function createMainWindow() {
   });
 }
 
-/**
- * Gracefully and synchronously kill child backend process tree on Windows/Unix
- */
-function terminateBackend() {
-  if (backendProcess && backendProcess.pid) {
-    console.log(`[Electron] Terminating backend process PID ${backendProcess.pid}...`);
-    terminateBackendProcess(backendProcess, { platform: process.platform });
-    backendProcess = null;
+function terminateAllManagedServices() {
+  if (backendSupervisor) {
+    appendDesktopLog('info', '[Electron] Stopping managed backend and worker processes...');
+    backendSupervisor.stop();
   }
   if (uiServer) {
     try {
       uiServer.close();
     } catch {}
     uiServer = null;
+    uiServerPort = null;
   }
 }
 
-// IPC Handlers (all validate trusted sender origin)
-ipcMain.handle('dialog:openDirectory', async (event) => {
-  assertTrustedIpcSender(event);
+// Strict allowlisted IPC Handlers (all validate trusted sender origin + inputs)
+registerSecureIpcHandler('dialog:openDirectory', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory'],
     title: 'Select Repository or Project Directory for Security Scan',
@@ -448,27 +567,79 @@ ipcMain.handle('dialog:openDirectory', async (event) => {
   if (result.canceled || result.filePaths.length === 0) {
     return null;
   }
-  return result.filePaths[0];
+  const selectedPath = result.filePaths[0];
+  approvedLocalDirectories.add(path.resolve(selectedPath));
+  return selectedPath;
 });
 
-ipcMain.handle('app:getInfo', (event) => {
-  assertTrustedIpcSender(event);
+registerSecureIpcHandler('dialog:saveReport', async (_event, payload) => {
+  const safePayload = validateSaveReportPayload(payload);
+  const ext = safePayload.format === 'markdown' ? 'md' : safePayload.format;
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Export Security Report',
+    defaultPath: safePayload.defaultFilename,
+    filters: [{ name: `${ext.toUpperCase()} Report`, extensions: [ext] }],
+  });
+  if (result.canceled || !result.filePath) {
+    return { saved: false, canceled: true };
+  }
+  fs.writeFileSync(result.filePath, safePayload.content, 'utf8');
+  return { saved: true, canceled: false, filename: path.basename(result.filePath) };
+});
+
+registerSecureIpcHandler('app:getInfo', () => {
+  const status = backendSupervisor ? backendSupervisor.getStatus() : null;
   return {
     version: app.getVersion(),
     platform: process.platform,
+    arch: process.arch,
     isPackaged: app.isPackaged,
-    backendUrl: `http://${BACKEND_HOST}:${BACKEND_PORT}`,
+    backendUrl: status && status.backendUrl ? status.backendUrl : `http://${BACKEND_HOST}:${PREFERRED_BACKEND_PORT}`,
+    sameOriginApi: !isDev,
     uiPort: uiServerPort,
+    backendState: status ? status.state : 'stopped',
   };
 });
 
-ipcMain.handle('app:checkBackend', async (event) => {
-  assertTrustedIpcSender(event);
-  return await checkBackendHealth();
+registerSecureIpcHandler('app:checkBackend', async () => {
+  if (!backendSupervisor) return false;
+  return await backendSupervisor.pollHealth();
 });
 
-ipcMain.handle('shell:openExternal', async (event, url) => {
-  assertTrustedIpcSender(event);
+registerSecureIpcHandler('app:getBackendStatus', () => {
+  if (!backendSupervisor) {
+    return { state: 'stopped', healthy: false, port: null, lastError: 'Supervisor not initialized' };
+  }
+  return backendSupervisor.getStatus();
+});
+
+registerSecureIpcHandler('app:restartBackend', async () => {
+  if (!backendSupervisor) {
+    throw new Error('Backend supervisor not initialized');
+  }
+  try {
+    await backendSupervisor.restart();
+    return backendSupervisor.getStatus();
+  } catch (err) {
+    return backendSupervisor.getStatus();
+  }
+});
+
+registerSecureIpcHandler('preferences:get', () => {
+  if (!storagePaths) return DEFAULT_USER_PREFERENCES;
+  const saved = readJsonFileSafe(storagePaths.preferencesFile, DEFAULT_USER_PREFERENCES);
+  return sanitizeUserPreferences(saved);
+});
+
+registerSecureIpcHandler('preferences:set', (_event, rawPrefs) => {
+  const cleanPrefs = sanitizeUserPreferences(rawPrefs);
+  if (storagePaths) {
+    writeJsonFileSafe(storagePaths.preferencesFile, cleanPrefs);
+  }
+  return cleanPrefs;
+});
+
+registerSecureIpcHandler('shell:openExternal', async (_event, url) => {
   if (isSafeExternalUrl(url)) {
     await shell.openExternal(url.trim());
     return true;
@@ -476,30 +647,52 @@ ipcMain.handle('shell:openExternal', async (event, url) => {
   return false;
 });
 
+// Sanity assertion: every allowlisted invoke channel was registered
+for (const ch of ALLOWED_IPC_INVOKE_CHANNELS) {
+  assertAllowedIpcChannel(ch);
+}
+
 // App lifecycle
 app.whenReady().then(async () => {
+  configureApplicationMenu();
+  initializeDesktopServices();
   createSplashScreen();
-  await startBackend();
-  const backendReady = await waitForBackend();
-  if (!backendReady) {
-    console.warn('[Electron] Backend health check timed out. Proceeding to load UI...');
+
+  try {
+    await backendSupervisor.start();
+  } catch (err) {
+    appendDesktopLog('error', `[Electron] Initial backend startup failed: ${err.message}`);
+    // Do not crash silently: show main window with backend error banner OR prompt user if severe
+    dialog.showMessageBox({
+      type: 'warning',
+      title: 'Red Mercury Engine Startup Warning',
+      message: 'Local Security Engine could not start cleanly.',
+      detail: `${err.message}\n\nYou can retry starting the engine from inside the application.`,
+      buttons: ['Continue to Console'],
+    }).catch(() => {});
   }
+
   await createMainWindow();
 
-  app.on('activate', () => {
+  app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow();
+      if (backendSupervisor && backendSupervisor.state === 'stopped') {
+        try {
+          await backendSupervisor.start();
+        } catch {}
+      }
+      await createMainWindow();
     }
   });
 });
 
 app.on('before-quit', () => {
-  terminateBackend();
+  terminateAllManagedServices();
 });
 
 app.on('window-all-closed', () => {
-  terminateBackend();
   if (process.platform !== 'darwin') {
+    terminateAllManagedServices();
     app.quit();
   }
 });

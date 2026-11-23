@@ -84,7 +84,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
   const summaryText = [
     `=======================================================`,
-    `REPO SHIELD AI — SECURITY AUDIT REPORT`,
+    `RED MERCURY — SECURITY AUDIT REPORT`,
     `Generated: ${new Date().toUTCString()}`,
     `=======================================================`,
     ``,
@@ -102,10 +102,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     `=======================================================`,
   ].join('\n');
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     let content = '';
     let mimeType = '';
     let filename = '';
+    const exportFormat = format === 'summary' ? 'txt' : format;
 
     if (format === 'sarif') {
       content = JSON.stringify(sarifData, null, 2);
@@ -119,6 +120,23 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       content = summaryText;
       mimeType = 'text/plain';
       filename = 'red-mercury-security-summary.txt';
+    }
+
+    if (typeof window !== 'undefined' && window.electronAPI?.saveReport) {
+      try {
+        const res = await window.electronAPI.saveReport({
+          defaultFilename: filename,
+          content,
+          format: exportFormat,
+        });
+        if (res?.saved) {
+          setDownloadSuccess(true);
+          setTimeout(() => setDownloadSuccess(false), 2500);
+        }
+        return;
+      } catch {
+        // Fall back to browser download if IPC save dialog fails
+      }
     }
 
     const blob = new Blob([content], { type: mimeType });

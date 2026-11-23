@@ -422,6 +422,27 @@ def ensure_sandbox_readable_workspace(
     if platform.system() == "Windows":
         return
 
+    if platform.system() == "Darwin":
+        # macOS Docker Desktop shares VirtioFS/gRPC-FUSE mounts under the host user identity
+        # without Linux POSIX ACLs; enforce strict owner-only permissions and zero world/group bits.
+        os.chmod(resolved_ws, stat.S_IRWXU)
+        for root, dirs, files in os.walk(resolved_ws, followlinks=False):
+            root_path = Path(root)
+            for d in list(dirs):
+                d_path = root_path / d
+                if d_path.is_symlink():
+                    dirs.remove(d)
+                    continue
+                os.chmod(d_path, stat.S_IRWXU)
+            for fname in files:
+                f_path = root_path / fname
+                if f_path.is_symlink():
+                    continue
+                mode = f_path.stat(follow_symlinks=False).st_mode
+                target_mode = stat.S_IRUSR | stat.S_IWUSR | (stat.S_IXUSR if (mode & stat.S_IXUSR) else 0)
+                os.chmod(f_path, target_mode)
+        return
+
     if sandbox_uid is None:
         from ..core.config import settings
         target_uid = parse_sandbox_uid(settings.SANDBOX_USER)

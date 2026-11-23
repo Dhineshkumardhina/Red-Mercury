@@ -14,9 +14,15 @@ class Settings(BaseSettings):
     # Core Application Metadata
     APP_NAME: str = "Red Mercury"
     APP_VERSION: str = "0.1.0"
-    APP_ENV: str = "development"  # development, staging, production
+    APP_ENV: str = "development"  # development, desktop, staging, production
     DEBUG: bool = False
     ORGANIZATION: str = "Xerova Digital Solutions"
+
+    # Desktop Managed Storage & IPC Verification
+    REDMERCURY_DATA_DIR: Optional[str] = None
+    REDMERCURY_CONFIG_DIR: Optional[str] = None
+    REDMERCURY_LOG_DIR: Optional[str] = None
+    REDMERCURY_IPC_TOKEN: Optional[str] = None
 
     # API Routing
     API_V1_PREFIX: str = "/api/v1"
@@ -152,6 +158,8 @@ class Settings(BaseSettings):
     SANDBOX_FAIL_CLOSED: bool = True
     SANDBOX_ALLOW_HOST_FALLBACK: bool = False
     SANDBOX_CONTAINER_IMAGE: str = "redmercury-worker:latest"
+    SANDBOX_APPROVED_IMAGE_DIGEST: Optional[str] = None
+    SANDBOX_REQUIRE_DIGEST_VALIDATION: bool = False
     SANDBOX_USER: str = "10002:10002"
     SANDBOX_MEMORY_LIMIT: str = "512m"
     SANDBOX_CPU_LIMIT: str = "1.0"
@@ -161,8 +169,8 @@ class Settings(BaseSettings):
 
     @property
     def sandbox_allow_host_fallback(self) -> bool:
-        """Never allow host fallback in production or staging, even if configured."""
-        if self.is_strict_env:
+        """Never allow host fallback in production, staging, or desktop, even if configured."""
+        if self.is_strict_env or self.is_desktop_env:
             return False
         return self.SANDBOX_ALLOW_HOST_FALLBACK
 
@@ -243,20 +251,59 @@ class Settings(BaseSettings):
         return self.APP_ENV.lower() == "staging"
 
     @property
+    def is_desktop_env(self) -> bool:
+        """True when running inside the managed standalone Electron desktop application."""
+        return self.APP_ENV.lower() == "desktop"
+
+    @property
     def is_strict_env(self) -> bool:
         """True for both production and staging — enforces identical security gates (SEC-17)."""
         return self.APP_ENV.lower() in ("production", "staging")
 
+    @property
+    def is_dev_seed_blocked(self) -> bool:
+        """Block development seed credentials in production, staging, and packaged desktop modes."""
+        return self.is_strict_env or self.is_desktop_env
+
     @model_validator(mode="after")
     def validate_production_configuration(self) -> "Settings":
-        """Strict production & staging configuration validator to prevent silent insecure defaults."""
+        """Strict production, staging, and desktop configuration validator to prevent silent insecure defaults."""
         import os
+        from pathlib import Path
+
+        if self.REDMERCURY_DATA_DIR and str(self.REDMERCURY_DATA_DIR).strip():
+            data_dir = Path(str(self.REDMERCURY_DATA_DIR).strip()).resolve()
+            data_dir.mkdir(parents=True, exist_ok=True)
+            if self.DATABASE_URL == "sqlite:///./redmercury.db":
+                db_path = (data_dir / "redmercury.db").as_posix()
+                self.DATABASE_URL = f"sqlite:///{db_path}"
+            if self.WORKSPACE_ROOT == "data/workspaces":
+                self.WORKSPACE_ROOT = str((data_dir / "workspaces").resolve())
+
         railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
         if isinstance(self.ALLOWED_HOSTS, list):
             if railway_domain and railway_domain not in self.ALLOWED_HOSTS:
                 self.ALLOWED_HOSTS.append(railway_domain)
             if os.getenv("RAILWAY_ENVIRONMENT") and "healthcheck.railway.app" not in self.ALLOWED_HOSTS:
                 self.ALLOWED_HOSTS.append("healthcheck.railway.app")
+
+        if self.is_desktop_env:
+            if not self.SECRET_KEY or len(self.SECRET_KEY) < 32 or "dev-insecure" in self.SECRET_KEY or "replace-in-production" in self.SECRET_KEY:
+                raise ValueError(
+                    "Desktop mode requires a cryptographically strong SECRET_KEY (minimum 32 characters, no development defaults)."
+                )
+            if (self.HOST or "").strip() not in ("127.0.0.1", "localhost"):
+                raise ValueError(
+                    f"Desktop backend HOST must be bound strictly to localhost/127.0.0.1, got '{self.HOST}'."
+                )
+            if self.DEBUG:
+                raise ValueError("DEBUG mode must be False in desktop deployments.")
+            if not self.CSRF_PROTECTION_ENABLED:
+                raise ValueError("CSRF_PROTECTION_ENABLED must be True in desktop deployments.")
+            if not self.SANDBOX_FAIL_CLOSED:
+                raise ValueError("SANDBOX_FAIL_CLOSED must be True in desktop deployments.")
+            if self.ALLOW_PRIVATE_NETWORKS:
+                raise ValueError("ALLOW_PRIVATE_NETWORKS must be False in desktop deployments.")
 
         if self.is_strict_env:
             env_label = self.APP_ENV.lower()

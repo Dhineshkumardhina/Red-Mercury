@@ -272,6 +272,12 @@ def ingest_git_repository(
     # 1. Strictly validate and sanitize URL against SSRF
     sanitized_url = validate_git_url(payload.git_url, allow_private=settings.ALLOW_PRIVATE_NETWORKS)
 
+    if settings.is_desktop_env and settings.OFFLINE_MODE and not os.environ.get("FORCE_ONLINE"):
+        raise SecurityPolicyViolationError(
+            "Remote HTTPS Git cloning requires internet access and is disabled in Offline Mode. "
+            "Use ZIP archive or Local Directory ingestion for offline security scanning."
+        )
+
     # 2. Determine repository name
     if payload.name and payload.name.strip():
         repo_name = payload.name.strip()

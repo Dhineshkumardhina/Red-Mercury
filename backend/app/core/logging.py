@@ -1,10 +1,13 @@
 """Structured logging setup for Red Mercury."""
 import json
 import logging
+from logging.handlers import RotatingFileHandler
+import os
+from pathlib import Path
 import re
 import sys
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # Regex patterns to scrub credentials from console and JSON log records
 LOG_SCRUB_PATTERNS = [
@@ -70,8 +73,13 @@ class StandardFormatter(logging.Formatter):
         return msg
 
 
-def setup_logging(level: str = "INFO", json_format: bool = False) -> None:
-    """Configure root and app loggers."""
+def setup_logging(
+    level: str = "INFO",
+    json_format: bool = False,
+    log_dir: Optional[str] = None,
+    log_filename: str = "backend.log",
+) -> None:
+    """Configure root and app loggers with optional secret-scrubbed rotating file output."""
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 
@@ -79,13 +87,33 @@ def setup_logging(level: str = "INFO", json_format: bool = False) -> None:
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
 
-    console_handler = logging.StreamHandler(sys.stdout)
-    if json_format:
-        console_handler.setFormatter(JSONFormatter())
-    else:
-        console_handler.setFormatter(StandardFormatter())
+    formatter: logging.Formatter = JSONFormatter() if json_format else StandardFormatter()
 
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
+
+    effective_log_dir = (log_dir or os.environ.get("REDMERCURY_LOG_DIR") or "").strip()
+    if effective_log_dir:
+        try:
+            dir_path = Path(effective_log_dir)
+            dir_path.mkdir(parents=True, exist_ok=True)
+            if os.name == "posix":
+                os.chmod(dir_path, 0o700)
+            log_file = dir_path / log_filename
+            file_handler = RotatingFileHandler(
+                log_file,
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+            if os.name == "posix" and log_file.exists():
+                os.chmod(log_file, 0o600)
+        except Exception:
+            # Never fail startup if file logging cannot be initialized
+            pass
 
     # Adjust external loggers
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)

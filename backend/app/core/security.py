@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import ipaddress
 import posixpath
 import re
@@ -118,6 +119,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         if settings.is_strict_env:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+
+        ipc_token = (getattr(settings, "REDMERCURY_IPC_TOKEN", None) or "").strip()
+        if ipc_token and request.url.path.rstrip("/") == f"{settings.API_V1_PREFIX}/health":
+            req_ipc = (request.headers.get("X-RedMercury-IPC-Token") or "").strip()
+            if req_ipc and hmac.compare_digest(ipc_token, req_ipc):
+                response.headers["X-RedMercury-IPC-Verified"] = "true"
 
         # Log request completion with correlation info
         logger.info(

@@ -10,10 +10,10 @@ logger = get_logger("redmercury.db")
 
 # Configure database engine based on dialect
 if settings.is_sqlite:
-    # SQLite requires check_same_thread=False for FastAPI concurrency
+    # SQLite requires check_same_thread=False for FastAPI concurrency and timeout for multi-process WAL writes
     engine = create_engine(
         settings.DATABASE_URL,
-        connect_args={"check_same_thread": False},
+        connect_args={"check_same_thread": False, "timeout": 15},
         echo=False,
     )
 
@@ -24,6 +24,7 @@ if settings.is_sqlite:
         try:
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=10000")
             cursor.execute("PRAGMA cache_size=-64000")
             cursor.execute("PRAGMA foreign_keys=ON")
         except Exception:

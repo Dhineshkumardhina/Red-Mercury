@@ -37,9 +37,16 @@ export const AiSecurityAnalystCard: React.FC<AiSecurityAnalystCardProps> = ({
             <Sparkles className="w-4 h-4" />
           </div>
           <div>
-            <h4 className="font-semibold text-xs text-slate-900">
-              AI-Generated Security Analysis — Requires Human Review
-            </h4>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h4 className="font-semibold text-xs text-slate-900">
+                AI-Generated Security Analysis — Requires Human Review
+              </h4>
+              {analysis?.ai_model && analysis.ai_model.toLowerCase().includes('fallback') && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-semibold">
+                  Offline Deterministic Engine
+                </span>
+              )}
+            </div>
             <p className="text-[11px] text-slate-500">
               Remediation insights and root cause claims must be validated by security engineers prior to implementation.
             </p>

@@ -322,7 +322,7 @@ def rotate_refresh_token_session(
         revoke_refresh_token_family(db, family_id=session_row.family_id, reason="user_deleted")
         raise UnauthorizedError("User account no longer exists.")
 
-    if settings.is_strict_env and user.email == "dev@xerova.com":
+    if settings.is_dev_seed_blocked and user.email == "dev@xerova.com":
         revoke_refresh_token_family(db, family_id=session_row.family_id, reason="dev_seed_blocked")
         raise UnauthorizedError("Development seed account is permanently disabled in production.")
 
@@ -376,7 +376,7 @@ def get_current_user(
     if not user:
         raise UnauthorizedError("User account no longer exists.")
 
-    if settings.is_strict_env and user.email == "dev@xerova.com":
+    if settings.is_dev_seed_blocked and user.email == "dev@xerova.com":
         raise UnauthorizedError("Development seed account is permanently disabled in production.")
 
     if user.account_status != "active":
@@ -433,7 +433,7 @@ def get_current_user_optional(
             return None
         user = db.query(User).filter(User.id == user_id).first()
         if user and user.account_status == "active":
-            if settings.is_strict_env and user.email == "dev@xerova.com":
+            if settings.is_dev_seed_blocked and user.email == "dev@xerova.com":
                 return None
             return user
         return None

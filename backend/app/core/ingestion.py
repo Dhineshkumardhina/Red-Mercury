@@ -663,12 +663,32 @@ def validate_local_ingest_path(local_path: str, user_id: str) -> Path:
         "c:\\windows", "c:/windows", "c:\\program files", "c:/program files",
         "c:\\program files (x86)", "c:/program files (x86)",
         "/etc", "/proc", "/sys", "/root", "/var", "/dev", "/boot", "/run",
+        "/system", "/library", "/private/etc", "/private/var/db",
     }
     if any(
         norm_target == fp or norm_target.startswith(fp + "\\") or norm_target.startswith(fp + "/")
         for fp in forbidden_prefixes
     ):
         raise SecurityPolicyViolationError("Access denied: Restricted system directory cannot be ingested.")
+
+    # Block credential stores (~/.ssh, ~/.aws, ~/.gnupg) and Red Mercury's own internal desktop data/secrets dirs
+    home_dir = Path.home().resolve()
+    sensitive_dirs = [home_dir / ".ssh", home_dir / ".aws", home_dir / ".gnupg", home_dir / ".kube"]
+    for env_key in ("REDMERCURY_DATA_DIR", "REDMERCURY_CONFIG_DIR", "REDMERCURY_LOG_DIR"):
+        env_val = (getattr(settings, env_key, None) or os.environ.get(env_key) or "").strip()
+        if env_val:
+            env_path = Path(env_val).resolve()
+            sensitive_dirs.append(env_path)
+            user_data_root = env_path.parent
+            for sub in ("secrets", "config", "logs", "backups"):
+                sensitive_dirs.append((user_data_root / sub).resolve())
+    for sensitive_dir in sensitive_dirs:
+        if sensitive_dir == workspace_root or sensitive_dir == user_allowed_workspace:
+            continue
+        if target_dir.is_relative_to(sensitive_dir):
+            raise SecurityPolicyViolationError(
+                "Access denied: Credential or internal application storage directory cannot be ingested."
+            )
 
     # 5. Explicit allowlist enforcement (mandatory in production; enforced whenever configured)
     if allowed_roots:

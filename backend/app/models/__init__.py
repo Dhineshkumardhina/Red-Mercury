@@ -11,7 +11,7 @@ from .audit import AuditEvent
 from .evidence import SecurityEvidence
 from .github import GitHubIntegration, PullRequestScan, RepositoryGitHubLink, WebhookDelivery
 from .validation import FindingValidation
-from .token import RevokedToken
+from .token import RefreshTokenSession, RevokedToken
 from .job import DurableJob, JobOutboxEvent, ActiveJobSlot
 
 __all__ = [
@@ -32,6 +32,7 @@ __all__ = [
     "PullRequestScan",
     "WebhookDelivery",
     "FindingValidation",
+    "RefreshTokenSession",
     "RevokedToken",
     "DurableJob",
     "JobOutboxEvent",
