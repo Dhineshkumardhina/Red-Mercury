@@ -613,7 +613,10 @@ def initialize_local_database(
     """
     from ..db.base import Base
     from ..db.session import engine as default_engine
-    import app.models  # noqa: F401  Ensure every model table registers with Base.metadata
+    try:
+        from .. import models  # noqa: F401
+    except (ImportError, ValueError):
+        import app.models  # noqa: F401  Ensure every model table registers with Base.metadata
 
     active_engine = engine_override or default_engine
     dialect = active_engine.dialect.name

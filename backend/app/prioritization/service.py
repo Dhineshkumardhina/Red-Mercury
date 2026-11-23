@@ -5,12 +5,7 @@ from sqlalchemy.orm import Session
 from ..models.finding import SecurityFinding
 from ..models.repository import Repository
 from .evaluator import batch_load_finding_context, evaluate_finding_risk
-from .schemas import (
-    ContextualRiskAssessment,
-    RemediationQueueItem,
-    RemediationReadiness,
-    RedMercuryPriority,
-)
+from .schemas import ContextualRiskAssessment, RemediationQueueItem, RemediationReadiness
 
 
 def get_suggested_action(

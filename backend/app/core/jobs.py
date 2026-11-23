@@ -28,15 +28,15 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import uuid
 
 from sqlalchemy import event, func, or_, text
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .audit import record_audit_event
 from .config import settings
-from .errors import AppSecException, ForbiddenError, NotFoundError, SecurityPolicyViolationError, ValidationError
+from .errors import AppSecException, NotFoundError, SecurityPolicyViolationError, ValidationError
 from .logging import get_logger, scrub_log_message
 from ..models.finding import SecurityFinding
-from ..models.github import PullRequestScan, WebhookDelivery
+from ..models.github import WebhookDelivery
 from ..models.job import ActiveJobSlot, DurableJob, JobOutboxEvent
 from ..models.repository import Repository
 from ..models.scan import Scan

@@ -8,7 +8,6 @@ Implements:
 - Graceful shutdown on SIGTERM/SIGINT releasing or preserving active leases.
 """
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
 import os
@@ -25,16 +24,7 @@ import uuid
 from sqlalchemy.exc import DatabaseError, OperationalError
 
 from ..core.config import settings
-from ..core.jobs import (
-    JobState,
-    claim_durable_job_by_id,
-    claim_next_durable_job,
-    execute_claimed_durable_job,
-    reconcile_jobs_on_startup,
-    recover_expired_job_leases,
-    recover_undispatched_outbox_events,
-    release_claimed_job_on_shutdown,
-)
+from ..core.jobs import JobState, claim_next_durable_job, execute_claimed_durable_job, reconcile_jobs_on_startup, recover_expired_job_leases, recover_undispatched_outbox_events, release_claimed_job_on_shutdown
 from ..core.logging import get_logger
 from ..core.quotas import reconcile_interrupted_jobs
 from ..db.session import SessionLocal, check_db_connection
@@ -43,7 +33,6 @@ from ..models.job import DurableJob
 from ..models.repository import Repository
 from ..models.scan import Scan
 from ..models.verification import VerificationRun
-from .runner import run_security_scan
 
 logger = get_logger("redmercury.scanner.worker")
 

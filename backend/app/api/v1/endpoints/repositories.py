@@ -2,7 +2,6 @@
 import os
 from pathlib import Path
 import re
-import shutil
 import tempfile
 from typing import List, Optional
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status

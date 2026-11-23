@@ -1,5 +1,4 @@
 """SQLAlchemy models for Durable Background Jobs, Transactional Outbox, and Atomic Quota Slots (Phase 6 / REL-01)."""
-from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean,
     Column,

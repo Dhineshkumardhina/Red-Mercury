@@ -10,7 +10,7 @@ from ..core.auth import (
     verify_repository_ownership,
     verify_verification_run_ownership,
 )
-from ..core.errors import NotFoundError, SecurityPolicyViolationError
+from ..core.errors import NotFoundError
 from ..models.evidence import SecurityEvidence
 from ..models.finding import SecurityFinding
 from ..models.repository import Repository

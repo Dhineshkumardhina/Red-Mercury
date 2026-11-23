@@ -1,7 +1,6 @@
 """Bandit SAST adapter for Python source code analysis."""
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import time

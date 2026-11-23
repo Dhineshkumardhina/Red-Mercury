@@ -14,6 +14,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { Header } from './Header';
+import { UpdateNotification } from '../common/UpdateNotification';
 import { useAuth } from '../../context/AuthContext';
 import type { BackendSupervisorStatus } from '../../types/electron';
 
@@ -269,6 +270,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             </div>
           )}
           {children}
+          <UpdateNotification />
         </main>
       </div>
     </div>

@@ -5,13 +5,8 @@ import {
   Sparkles,
   Key,
   ShieldCheck,
-  Layers,
   Box,
-  Sliders,
-  Check,
-  X,
   AlertCircle,
-  FileCode2,
 } from 'lucide-react';
 import { ScannerToolInfo } from '../../services/api';
 

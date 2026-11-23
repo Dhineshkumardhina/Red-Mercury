@@ -1,12 +1,10 @@
 """GitHub and CI/CD Integrations API endpoints."""
-import os
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Header, Request, status
 from sqlalchemy.orm import Session
 
 from ....core.auth import get_current_user, require_mutating_role
-from ....core.config import settings
-from ....core.errors import ForbiddenError, SecurityPolicyViolationError
+from ....core.errors import SecurityPolicyViolationError
 from ....db.session import get_db
 from ....integrations.github.schemas import (
     CIEvaluationRequest,

@@ -16,6 +16,42 @@ export interface DesktopUserPreferences {
   sandboxTimeout: number;
 }
 
+export interface UpdateStatus {
+  state:
+    | 'idle'
+    | 'checking'
+    | 'available'
+    | 'not-available'
+    | 'downloading'
+    | 'verifying'
+    | 'ready-to-install'
+    | 'installing'
+    | 'error';
+  currentVersion: string;
+  platform: string;
+  arch?: string;
+  lastCheckedAt?: string | null;
+  availableUpdate?: {
+    version: string;
+    releaseDate?: string;
+    releaseNotes?: string;
+    publisher?: string;
+  } | null;
+  downloadProgress?: {
+    percent: number;
+    transferredBytes: number;
+    totalBytes: number;
+  } | null;
+  lastError?: string | null;
+  isReadyToInstall: boolean;
+}
+
+export interface UpdateProgress {
+  percent: number;
+  transferredBytes: number;
+  totalBytes: number;
+}
+
 export interface ElectronAPI {
   isElectron: boolean;
   selectDirectory: () => Promise<string | null>;
@@ -41,6 +77,13 @@ export interface ElectronAPI {
   getPreferences?: () => Promise<DesktopUserPreferences>;
   savePreferences?: (prefs: DesktopUserPreferences) => Promise<DesktopUserPreferences>;
   openExternal: (url: string) => Promise<boolean>;
+  checkForUpdates?: (feedUrl?: string) => Promise<UpdateStatus>;
+  getUpdateStatus?: () => Promise<UpdateStatus>;
+  downloadUpdate?: () => Promise<UpdateStatus>;
+  cancelUpdateDownload?: () => Promise<boolean>;
+  installUpdate?: () => Promise<{ success: boolean; platform: string; installerPath?: string }>;
+  onUpdateStatus?: (callback: (status: UpdateStatus) => void) => () => void;
+  onUpdateProgress?: (callback: (progress: UpdateProgress) => void) => () => void;
 }
 
 declare global {

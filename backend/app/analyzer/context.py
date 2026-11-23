@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from ..core.errors import NotFoundError, ValidationError
+from ..core.errors import ValidationError
 from ..core.logging import get_logger
 from ..models.repository import Repository
 from ..scanner.base import redact_secrets

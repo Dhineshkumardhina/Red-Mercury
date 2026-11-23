@@ -24,7 +24,7 @@
     "test": "npm --prefix frontend run test && python -m pytest tests/",
     "desktop": "cross-env NODE_ENV=production electron .",
     "desktop:dev": "concurrently -k -n \"BACKEND,FRONTEND,ELECTRON\" -c \"cyan,magenta,yellow\" \"npm run backend:dev\" \"npm run frontend:dev\" \"wait-on -t 30000 http://127.0.0.1:3000 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:3000 electron .\"",
-    "desktop:test": "node --test electron/security.test.cjs",
+    "desktop:test": "node --test electron/security.test.cjs electron/updater.test.cjs",
     "desktop:icons": "python scripts/generate_app_icon.py",
     "desktop:prepare:win": "python scripts/prepare_desktop_bundle.py --target win32-x64",
     "desktop:prepare:mac-x64": "python3 scripts/prepare_desktop_bundle.py --target darwin-x64",
@@ -42,6 +42,9 @@
     "electron-builder": "^26.15.3",
     "wait-on": "^9.5.1"
   },
+  "overrides": {
+    "minimatch": "^11.0.9"
+  },
   "build": {
     "appId": "com.xerova.redmercury",
     "productName": "Red Mercury",
@@ -49,6 +52,12 @@
     "directories": {
       "output": "dist-electron",
       "buildResources": "build"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Dhineshkumardhina",
+      "repo": "Red-Mercury",
+      "releaseType": "release"
     },
     "afterSign": "build/notarize.cjs",
     "files": [

@@ -11,7 +11,6 @@ from ....core.auth import (
     verify_repository_ownership,
     verify_scan_belongs_to_repository,
 )
-from ....core.errors import NotFoundError
 from ....db.session import get_db
 from ....models.finding import SecurityFinding
 from ....models.repository import Repository

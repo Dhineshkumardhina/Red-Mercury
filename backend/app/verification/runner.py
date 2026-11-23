@@ -8,16 +8,12 @@ Enforces:
 """
 import ast
 from dataclasses import dataclass, field
-import os
 from pathlib import Path
 import re
-import subprocess
-import sys
 from typing import Any, Dict, List, Optional, Tuple
 from ..core.config import settings
-from ..scanner.base import NormalizedFinding, ScannerStatus, ScanJobResult
+from ..scanner.base import NormalizedFinding, ScannerStatus
 from ..scanner.registry import scanner_registry
-from .workspace import get_sanitized_runner_env
 
 
 # Prohibited call names and modules in untrusted test files to prevent host execution

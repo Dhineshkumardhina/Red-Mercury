@@ -1,6 +1,6 @@
 """Pydantic schemas for the AI Security Analysis Engine."""
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 

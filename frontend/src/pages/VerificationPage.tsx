@@ -21,7 +21,7 @@ export const VerificationPage: React.FC = () => {
   const [activeCrashItem, setActiveCrashItem] = useState<VerificationItem | null>(null);
   const [activeEvidenceRun, setActiveEvidenceRun] = useState<ApiVerificationRun | null>(null);
   const [isNewRunOpen, setIsNewRunOpen] = useState(Boolean(initialFindingIdParam));
-  const [targetFindingId, setTargetFindingId] = useState<string | undefined>(initialFindingIdParam);
+  const [targetFindingId] = useState<string | undefined>(initialFindingIdParam);
 
   const [isMerging, setIsMerging] = useState(false);
   const [isRerunningSandbox, setIsRerunningSandbox] = useState(false);

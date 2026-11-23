@@ -94,6 +94,26 @@ jobs:
           }
           (Get-FileHash $exe.FullName -Algorithm SHA256).Hash | Out-File "dist-electron\RedMercury-Setup-x64.exe.sha256"
 
+      - name: "Generate Ed25519-Signed Update Manifest"
+        shell: pwsh
+        env:
+          REDMERCURY_UPDATE_SIGNING_KEY: ${{ secrets.REDMERCURY_UPDATE_SIGNING_KEY }}
+        run: |
+          $pkgVersion = (Get-Content package.json | ConvertFrom-Json).version
+          if ($env:REDMERCURY_UPDATE_SIGNING_KEY) {
+            node scripts/generate_update_manifest.cjs `
+              --version "$pkgVersion" `
+              --url "https://github.com/Dhineshkumardhina/Red-Mercury/releases/download/v$pkgVersion/RedMercury-Setup-x64.exe" `
+              --artifact "dist-electron\RedMercury-Setup-x64.exe" `
+              --output "dist-electron\update-manifest-win32-x64.json" `
+              --platform "win32" `
+              --arch "x64" `
+              --publisher "Xerova Digital Solutions"
+            Copy-Item "dist-electron\update-manifest-win32-x64.json" -Destination "dist-electron\update-manifest.json" -Force
+          } else {
+            Write-Host "REDMERCURY_UPDATE_SIGNING_KEY secret not configured. Skipping manifest signature generation."
+          }
+
       - name: "Upload Windows x64 installer artifact"
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -101,7 +121,8 @@ jobs:
           path: |
             dist-electron/RedMercury-Setup-x64.exe
             dist-electron/RedMercury-Setup-x64.exe.sha256
-          if-no-files-found: error
+            dist-electron/update-manifest*
+          if-no-files-found: warn
           retention-days: 30
 
   build-macos-x64:
@@ -263,3 +284,42 @@ jobs:
             dist-electron/RedMercury-macOS-arm64.zip
           if-no-files-found: error
           retention-days: 30
+
+  publish-github-release:
+    name: "Publish GitHub Desktop Release"
+    needs: [build-windows-x64, build-macos-x64, build-macos-arm64]
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'Dhineshkumardhina/Red-Mercury'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: "Download Windows build artifacts"
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
+        with:
+          name: redmercury-win32-x64
+          path: dist-release
+
+      - name: "Download macOS Intel artifacts"
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
+        with:
+          name: redmercury-darwin-x64
+          path: dist-release
+
+      - name: "Download macOS Apple Silicon artifacts"
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v4
+        with:
+          name: redmercury-darwin-arm64
+          path: dist-release
+
+      - name: "List consolidated release files"
+        run: |
+          ls -la dist-release
+
+      - name: "Publish GitHub Release with Signed Artifacts"
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87238604da95938704159 # v2
+        with:
+          files: dist-release/*
+          draft: false
+          prerelease: ${{ contains(github.ref, '-alpha') || contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
+          generate_release_notes: true

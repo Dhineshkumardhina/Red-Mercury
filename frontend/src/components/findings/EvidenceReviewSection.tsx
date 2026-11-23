@@ -35,7 +35,7 @@ export interface EvidenceReviewSectionProps {
 }
 
 export const EvidenceReviewSection: React.FC<EvidenceReviewSectionProps> = ({
-  findingId,
+  findingId: _findingId,
   validation,
   isLoading,
   isValidating,

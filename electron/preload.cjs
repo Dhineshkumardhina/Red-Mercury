@@ -21,4 +21,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPreferences: () => ipcRenderer.invoke('preferences:get'),
   savePreferences: (prefs) => ipcRenderer.invoke('preferences:set', prefs),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  checkForUpdates: (feedUrl) => ipcRenderer.invoke('updater:check', feedUrl),
+  getUpdateStatus: () => ipcRenderer.invoke('updater:getStatus'),
+  downloadUpdate: () => ipcRenderer.invoke('updater:download'),
+  cancelUpdateDownload: () => ipcRenderer.invoke('updater:cancelDownload'),
+  installUpdate: () => ipcRenderer.invoke('updater:install'),
+  onUpdateStatus: (callback) => {
+    if (typeof callback !== 'function') {
+      return () => {};
+    }
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('updater:status', listener);
+    return () => {
+      ipcRenderer.removeListener('updater:status', listener);
+    };
+  },
+  onUpdateProgress: (callback) => {
+    if (typeof callback !== 'function') {
+      return () => {};
+    }
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('updater:progress', listener);
+    return () => {
+      ipcRenderer.removeListener('updater:progress', listener);
+    };
+  },
 });

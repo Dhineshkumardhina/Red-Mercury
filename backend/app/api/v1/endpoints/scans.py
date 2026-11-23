@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from ....core.audit import record_audit_event
 from ....core.auth import get_current_user, require_mutating_role, verify_repository_ownership, verify_scan_ownership
 from ....core.config import settings
-from ....core.errors import AppSecException, ForbiddenError, NotFoundError
+from ....core.errors import AppSecException
 from ....core.jobs import (
     JobState,
     TERMINAL_JOB_STATES,

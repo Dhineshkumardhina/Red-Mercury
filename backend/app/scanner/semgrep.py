@@ -1,8 +1,6 @@
 """Semgrep OSS adapter for multi-language static analysis."""
-import importlib.util
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import time

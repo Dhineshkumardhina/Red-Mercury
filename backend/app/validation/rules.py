@@ -1,5 +1,5 @@
 """Deterministic rule engine evaluating collected evidence against explicit validation rules."""
-from typing import List, Tuple
+from typing import List
 from .collector import EvidenceDossier
 from .enums import ValidationStatus
 

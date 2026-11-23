@@ -3,13 +3,12 @@
 Coordinates bounded context extraction, secret redaction, AI/fallback execution,
 strict schema validation, and persistence into the finding_analyses table.
 """
-from datetime import datetime, timezone
 import json
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from ..core.audit import record_audit_event
-from ..core.errors import NotFoundError, SecurityPolicyViolationError
+from ..core.errors import SecurityPolicyViolationError
 from ..core.logging import get_logger
 from ..models.analysis import FindingAnalysis
 from ..models.finding import SecurityFinding

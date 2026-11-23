@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from ..analyzer.context import get_bounded_source_context
 from ..models.finding import SecurityFinding

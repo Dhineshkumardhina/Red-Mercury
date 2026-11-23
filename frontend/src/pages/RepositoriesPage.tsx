@@ -22,7 +22,6 @@ import {
   Sliders,
   ChevronUp,
   ChevronDown,
-  Sparkles,
 } from 'lucide-react';
 import { api, ApiRepository, ScannerToolInfo } from '../services/api';
 import { Repository, RepoHealth } from '../types';

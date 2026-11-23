@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 from fastapi.responses import FileResponse

@@ -10,7 +10,6 @@ Evaluates API specifications (OpenAPI/Swagger) and API endpoint routing code for
 import json
 from pathlib import Path
 import re
-import subprocess
 import time
 from typing import Any, Dict, List, Optional
 

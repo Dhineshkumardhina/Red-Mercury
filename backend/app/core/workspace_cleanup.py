@@ -12,11 +12,10 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional, Set, Tuple
 from sqlalchemy.orm import Session
 
 from .audit import record_audit_event
-from .config import settings
 from .errors import SecurityPolicyViolationError, ValidationError
 from .ingestion import _path_or_ancestors_contain_symlink, get_workspace_root
 from .logging import get_logger

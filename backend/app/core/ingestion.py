@@ -15,10 +15,10 @@ import signal
 import socket
 import stat
 import subprocess
+import urllib.parse
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-import urllib.parse
 import zipfile
 import zlib
 

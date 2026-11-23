@@ -1,7 +1,7 @@
 """SQLAlchemy Base and TimestampMixin for all domain models."""
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, DateTime, String
+from sqlalchemy import Column, DateTime
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()

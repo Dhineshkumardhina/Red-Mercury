@@ -1,7 +1,7 @@
 """Pydantic schemas for Evidence-Driven Vulnerability Validation."""
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 

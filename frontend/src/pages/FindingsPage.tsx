@@ -118,10 +118,6 @@ export const FindingsPage: React.FC = () => {
   // Convert raw findings to enriched items
   const enrichedFindings: SecurityFinding[] = useMemo(() => {
     return liveFindings.map(lf => {
-      const isSecret = lf.cwe?.includes('798') ||
-        lf.scanner_name?.toLowerCase().includes('secret') ||
-        lf.scanner_name?.toLowerCase().includes('gitleaks');
-
       const isFixReady = lf.remediation_readiness === 'VERIFIED_FIX_READY' || !!lf.pr_number;
 
       return {

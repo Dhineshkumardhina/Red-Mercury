@@ -1,14 +1,13 @@
 """Job quotas, concurrency limit enforcement, and interrupted job reconciliation."""
 from datetime import datetime, timedelta, timezone
 import json
-from typing import Optional
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .errors import SecurityPolicyViolationError
 from .logging import get_logger
 from ..models.finding import SecurityFinding
-from ..models.github import PullRequestScan, RepositoryGitHubLink
+from ..models.github import PullRequestScan
 from ..models.repository import Repository
 from ..models.scan import Scan
 from ..models.user import User

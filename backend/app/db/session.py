@@ -1,7 +1,7 @@
 """SQLAlchemy engine, session factory, and dependency injection."""
 from typing import Generator
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session
 
 from ..core.config import settings
 from ..core.logging import get_logger

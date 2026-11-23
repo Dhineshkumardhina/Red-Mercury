@@ -7,7 +7,7 @@ from typing import Optional, Tuple
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ...core.errors import AppSecException, ForbiddenError, UnauthorizedError
+from ...core.errors import AppSecException
 from ...core.logging import get_logger
 from ...models.github import WebhookDelivery
 

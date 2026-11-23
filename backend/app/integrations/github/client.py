@@ -1,7 +1,5 @@
 """GitHub REST API Client supporting App Installations and Fine-Grained Tokens."""
-from datetime import datetime, timezone
-import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 import httpx
 
 from ...core.errors import AppSecException, ForbiddenError, RevokedCredentialError, UnauthorizedError

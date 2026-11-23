@@ -15,9 +15,9 @@ import hashlib
 import os
 from pathlib import Path
 import stat
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 import uuid
-from .patch_parser import PatchValidationResult, ParsedFilePatch, ParsedHunk
+from .patch_parser import PatchValidationResult, ParsedHunk
 
 
 class PatchApplicationError(Exception):

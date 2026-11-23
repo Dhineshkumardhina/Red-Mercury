@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 
 from .base import ScanJobResult, ScannerStatus
 from .registry import scanner_registry
-from ..core.audit import record_audit_event
 from ..core.logging import get_logger
 from ..models.finding import SecurityFinding
 from ..models.repository import Repository

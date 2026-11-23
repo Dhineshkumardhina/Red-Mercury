@@ -17,7 +17,7 @@ PROHIBITED / UNNECESSARY PERMISSIONS (Strictly NOT requested):
 - 'deployments': write (prohibited - Red Mercury never deploys unreviewed code)
 - 'single_file': write (prohibited - Red Mercury never auto-merges or writes to main)
 """
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 LEAST_PRIVILEGE_PERMISSIONS_READONLY = {

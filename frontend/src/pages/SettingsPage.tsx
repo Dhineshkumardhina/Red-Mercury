@@ -7,7 +7,7 @@ import {
   SandboxDiagnostics,
   SystemCapabilities,
 } from '../services/api';
-import type { BackendSupervisorStatus } from '../types/electron';
+import type { BackendSupervisorStatus, UpdateStatus } from '../types/electron';
 
 const PREFS_STORAGE_KEY = 'redmercury_ui_preferences';
 
@@ -33,8 +33,10 @@ export const SettingsPage: React.FC = () => {
   const [backupNotice, setBackupNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const restoreFileInputRef = useRef<HTMLInputElement | null>(null);
   const [desktopStatus, setDesktopStatus] = useState<BackendSupervisorStatus | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [updateActionMsg, setUpdateActionMsg] = useState<string | null>(null);
   const [isRestartingEngine, setIsRestartingEngine] = useState(false);
-  const [isHealthLoading, setIsHealthLoading] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
 
   const refreshBackupsList = async () => {
@@ -49,15 +51,11 @@ export const SettingsPage: React.FC = () => {
 
   useEffect(() => {
     let isMounted = true;
-    setIsHealthLoading(true);
     api.getHealth()
       .then(res => {
         if (isMounted) setHealthData(res);
       })
-      .catch(() => {})
-      .finally(() => {
-        if (isMounted) setIsHealthLoading(false);
-      });
+      .catch(() => {});
 
     api.getSystemCapabilities()
       .then(caps => {
@@ -110,11 +108,59 @@ export const SettingsPage: React.FC = () => {
       }
     }
 
+    let unsubUpdate: (() => void) | undefined;
+    if (typeof window !== 'undefined' && window.electronAPI?.getUpdateStatus) {
+      window.electronAPI.getUpdateStatus().then(st => {
+        if (isMounted && st) setUpdateStatus(st);
+      }).catch(() => {});
+      if (window.electronAPI.onUpdateStatus) {
+        unsubUpdate = window.electronAPI.onUpdateStatus((st) => {
+          if (isMounted) setUpdateStatus(st);
+        });
+      }
+    }
+
     return () => {
       isMounted = false;
       if (unsubscribe) unsubscribe();
+      if (unsubUpdate) unsubUpdate();
     };
   }, []);
+
+  const handleCheckForUpdates = async () => {
+    if (!window.electronAPI?.checkForUpdates || isCheckingUpdates) return;
+    setIsCheckingUpdates(true);
+    setUpdateActionMsg(null);
+    try {
+      const res = await window.electronAPI.checkForUpdates();
+      setUpdateStatus(res);
+      if (res.state === 'not-available') {
+        setUpdateActionMsg('Application is up to date.');
+      }
+    } catch (err: any) {
+      setUpdateActionMsg(`Update check failed: ${err.message}`);
+    } finally {
+      setIsCheckingUpdates(false);
+    }
+  };
+
+  const handleDownloadUpdate = async () => {
+    if (!window.electronAPI?.downloadUpdate) return;
+    try {
+      await window.electronAPI.downloadUpdate();
+    } catch (err: any) {
+      setUpdateActionMsg(`Download failed: ${err.message}`);
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    if (!window.electronAPI?.installUpdate) return;
+    try {
+      await window.electronAPI.installUpdate();
+    } catch (err: any) {
+      setUpdateActionMsg(`Install failed: ${err.message}`);
+    }
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -360,6 +406,97 @@ export const SettingsPage: React.FC = () => {
               )}
             </div>
           )}
+        </div>
+
+        {/* 1A. About Red Mercury — Version & Updates */}
+        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">About Red Mercury — Version &amp; Updates</h2>
+              <p className="text-xs text-slate-500 mt-0.5">Desktop application update channel, authenticity verification, and lifecycle</p>
+            </div>
+            <span className="px-2.5 py-0.5 text-[11px] font-semibold rounded-full bg-sky-50 text-sky-700 border border-sky-200">
+              Ed25519 Verified
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">Installed Version</span>
+              <span className="font-bold text-slate-800">v{updateStatus?.currentVersion || '1.0.0'}</span>
+            </div>
+
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">Release Channel</span>
+              <span className="font-bold text-slate-800">Stable (Official)</span>
+            </div>
+
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">Last Update Check</span>
+              <span className="font-semibold text-slate-700">
+                {updateStatus?.lastCheckedAt ? new Date(updateStatus.lastCheckedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'On Startup'}
+              </span>
+            </div>
+
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">Update Status</span>
+              <span className="font-bold flex items-center gap-1.5">
+                {updateStatus?.state === 'available' ? (
+                  <span className="text-amber-600">v{updateStatus.availableUpdate?.version} Available</span>
+                ) : updateStatus?.state === 'downloading' ? (
+                  <span className="text-sky-600">Downloading ({updateStatus.downloadProgress?.percent || 0}%)</span>
+                ) : updateStatus?.state === 'verifying' ? (
+                  <span className="text-sky-600">Verifying...</span>
+                ) : updateStatus?.state === 'ready-to-install' ? (
+                  <span className="text-emerald-600">Ready to Install</span>
+                ) : updateStatus?.state === 'error' ? (
+                  <span className="text-rose-600 truncate" title={updateStatus.lastError || ''}>Update Error</span>
+                ) : (
+                  <span className="text-emerald-600">Up to Date</span>
+                )}
+              </span>
+            </div>
+          </div>
+
+          {updateActionMsg && (
+            <p className="text-xs text-slate-600 italic bg-slate-50 p-2 rounded border border-slate-200">
+              {updateActionMsg}
+            </p>
+          )}
+
+          <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <span className="text-slate-500 text-[11px]">
+              Updates are cryptographically signed with Ed25519 and verified against publisher identity.
+            </span>
+            <div className="flex items-center gap-2">
+              {updateStatus?.state === 'available' && (
+                <button
+                  type="button"
+                  onClick={handleDownloadUpdate}
+                  className="px-3 py-1.5 rounded-md bg-sky-600 hover:bg-sky-500 text-white font-medium text-xs shadow-xs"
+                >
+                  Download Update
+                </button>
+              )}
+              {updateStatus?.state === 'ready-to-install' && (
+                <button
+                  type="button"
+                  onClick={handleInstallUpdate}
+                  className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs shadow-xs"
+                >
+                  Restart &amp; Install
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleCheckForUpdates}
+                disabled={isCheckingUpdates || updateStatus?.state === 'downloading'}
+                className="px-3 py-1.5 rounded-md border border-slate-200 bg-white hover:bg-slate-50 text-slate-800 font-medium text-xs cursor-pointer disabled:opacity-50"
+              >
+                {isCheckingUpdates ? 'Checking for Updates...' : 'Check for Updates'}
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* 1B. Runtime Capabilities & Offline Mode Boundaries */}

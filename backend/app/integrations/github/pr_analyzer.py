@@ -11,7 +11,6 @@ Evaluates security posture changes across base and head commit revisions:
 4. Audits incomplete or failed scanner executions.
 """
 from dataclasses import dataclass, field
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy.orm import Session
@@ -19,7 +18,6 @@ from sqlalchemy.orm import Session
 from ...core.logging import get_logger
 from ...models.finding import SecurityFinding
 from ...models.repository import Repository
-from ...models.scan import Scan
 from ...scanner.base import NormalizedFinding, ScannerStatus
 from ...scanner.registry import scanner_registry
 from .schemas import CategorizedPRFinding, FindingClassification, PRVerificationSummary

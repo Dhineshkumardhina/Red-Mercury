@@ -23,10 +23,17 @@ const ALLOWED_IPC_INVOKE_CHANNELS = Object.freeze([
   'preferences:get',
   'preferences:set',
   'shell:openExternal',
+  'updater:check',
+  'updater:getStatus',
+  'updater:download',
+  'updater:cancelDownload',
+  'updater:install',
 ]);
 
 const ALLOWED_IPC_EVENT_CHANNELS = Object.freeze([
   'backend:status',
+  'updater:status',
+  'updater:progress',
 ]);
 
 const ALLOWED_IPC_CHANNEL_SET = new Set([
@@ -41,6 +48,10 @@ const DEFAULT_USER_PREFERENCES = Object.freeze({
   notifyOnCritical: true,
   sandboxTimeout: 120,
 });
+
+const DEFAULT_UPDATE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAzQDiqMSWzNSIcGoXCFfqxhnlGKVYSz8nVdEQijWqDP8=
+-----END PUBLIC KEY-----`;
 
 const ALLOWED_REPORT_FORMATS = new Set(['sarif', 'json', 'markdown', 'md', 'txt']);
 const MAX_REPORT_CONTENT_BYTES = 25 * 1024 * 1024;
@@ -1026,7 +1037,9 @@ module.exports = {
   isLocalhostBindHost,
   isTrustedLocalHostHeader,
   isValidUpdateFeedUrl,
+  compareSemverStrings,
   verifyUpdateManifestSignature,
+  DEFAULT_UPDATE_PUBLIC_KEY_PEM,
   scrubLogText,
   parseBackendPort,
   findAvailableLocalPort,

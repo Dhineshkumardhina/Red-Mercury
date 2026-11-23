@@ -1,7 +1,6 @@
 """Gitleaks adapter for detecting exposed secrets and credentials."""
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import time

@@ -1,11 +1,10 @@
 """Evidence-driven vulnerability validation service orchestration."""
 from datetime import datetime, timezone
 import json
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from ..core.audit import record_audit_event
-from ..core.auth import verify_finding_ownership, verify_repository_ownership
 from ..core.errors import NotFoundError, SecurityPolicyViolationError
 from ..core.logging import get_logger
 from ..evidence.service import record_security_evidence

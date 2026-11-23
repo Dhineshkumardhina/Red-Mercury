@@ -10,10 +10,9 @@ Enforces:
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from ...core.errors import AppSecException, ForbiddenError, SecurityPolicyViolationError
 from ...core.logging import get_logger
 from .pr_analyzer import PRAnalysisResult
-from .schemas import CategorizedPRFinding, FindingClassification
+from .schemas import FindingClassification
 
 logger = get_logger("redmercury.github.publisher")
 

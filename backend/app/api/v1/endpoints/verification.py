@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ....core.audit import record_audit_event
 from ....core.auth import get_current_user, require_mutating_role, verify_finding_ownership, verify_verification_run_ownership
 from ....core.config import settings
-from ....core.errors import AppSecException, ForbiddenError, NotFoundError, SecurityPolicyViolationError, ValidationError
+from ....core.errors import AppSecException, SecurityPolicyViolationError, ValidationError
 from ....core.jobs import (
     TERMINAL_JOB_STATES,
     cancel_durable_job,

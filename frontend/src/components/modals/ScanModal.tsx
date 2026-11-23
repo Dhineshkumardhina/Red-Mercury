@@ -22,7 +22,6 @@ export const ScanModal: React.FC<ScanModalProps> = ({
   autoStart = false,
   initialSelectedTools,
 }) => {
-  const [scanSeconds, setScanSeconds] = useState(0);
   const [repositories, setRepositories] = useState<ApiRepository[]>([]);
   const [selectedRepoId, setSelectedRepoId] = useState<string>(targetRepoId || '');
   const [tools, setTools] = useState<ScannerToolInfo[]>([]);
@@ -84,12 +83,6 @@ export const ScanModal: React.FC<ScanModalProps> = ({
     }
   }, [isOpen, targetRepoId]);
 
-  const toggleTool = (toolName: string) => {
-    setSelectedToolNames((prev) =>
-      prev.includes(toolName) ? prev.filter((t) => t !== toolName) : [...prev, toolName]
-    );
-  };
-
   const runScan = async (repoId: string, toolsToRun: string[]) => {
     if (!repoId) {
       setErrorMessage('Please select a repository to scan.');
@@ -103,12 +96,7 @@ export const ScanModal: React.FC<ScanModalProps> = ({
     setIsScanning(true);
     setErrorMessage(null);
     setScanResult(null);
-    setScanSeconds(0);
     setStatusMessage('Queueing security scan pipeline...');
-
-    const timer = setInterval(() => {
-      setScanSeconds((prev) => prev + 1);
-    }, 1000);
 
     try {
       const scan = await api.triggerScan({
@@ -148,7 +136,6 @@ export const ScanModal: React.FC<ScanModalProps> = ({
       console.error('Scan execution error:', err);
       setErrorMessage(err.message || 'Scan execution failed. Check repository workspace status.');
     } finally {
-      clearInterval(timer);
       setIsScanning(false);
     }
   };

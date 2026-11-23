@@ -2,7 +2,7 @@
 import base64
 import hashlib
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from cryptography.fernet import Fernet, InvalidToken
 
 from ...core.config import settings

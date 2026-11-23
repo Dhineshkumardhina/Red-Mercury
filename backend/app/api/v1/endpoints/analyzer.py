@@ -1,5 +1,5 @@
 from typing import List
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ....analyzer.service import analyze_finding_service, get_finding_analyses_for_finding
@@ -9,7 +9,7 @@ from ....core.auth import (
     verify_finding_ownership,
     verify_repository_ownership,
 )
-from ....core.errors import ForbiddenError, UnauthorizedError
+from ....core.errors import ForbiddenError
 from ....db.session import get_db
 from ....models.finding import SecurityFinding
 from ....models.user import User

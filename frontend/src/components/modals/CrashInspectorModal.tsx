@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertTriangle, X, RotateCw, Terminal } from 'lucide-react';
+import { AlertTriangle, X, RotateCw } from 'lucide-react';
 import { VerificationItem } from '../../types';
 
 interface CrashInspectorModalProps {

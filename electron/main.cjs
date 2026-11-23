@@ -25,6 +25,7 @@ let uiServer = null;
 let uiServerPort = null;
 let storagePaths = null;
 let backendSupervisor = null;
+let updateManager = null;
 
 const isDev = process.env.NODE_ENV === 'development';
 const BACKEND_HOST = '127.0.0.1';
@@ -80,6 +81,26 @@ function broadcastBackendStatus(status) {
     const currentUrl = mainWindow.webContents.getURL();
     if (isTrustedOriginUrl(currentUrl, getTrustedAppOrigins())) {
       mainWindow.webContents.send('backend:status', status);
+    }
+  } catch {}
+}
+
+function broadcastUpdateStatus(status) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const currentUrl = mainWindow.webContents.getURL();
+    if (isTrustedOriginUrl(currentUrl, getTrustedAppOrigins())) {
+      mainWindow.webContents.send('updater:status', status);
+    }
+  } catch {}
+}
+
+function broadcastUpdateProgress(progress) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const currentUrl = mainWindow.webContents.getURL();
+    if (isTrustedOriginUrl(currentUrl, getTrustedAppOrigins())) {
+      mainWindow.webContents.send('updater:progress', progress);
     }
   } catch {}
 }
@@ -346,6 +367,28 @@ function initializeDesktopServices() {
   backendSupervisor.on('status', (status) => {
     broadcastBackendStatus(status);
   });
+
+  const { UpdateManager } = require('./updater.cjs');
+  updateManager = new UpdateManager({
+    currentVersion: app.getVersion(),
+    storagePaths,
+    isAppSigned: app.isPackaged || process.env.REDMERCURY_FORCE_APP_SIGNED === 'true',
+    logFn: appendDesktopLog,
+    onBeforeInstall: async () => {
+      terminateAllManagedServices();
+    },
+    appQuitFn: () => {
+      app.quit();
+    },
+  });
+
+  updateManager.on('status', (status) => {
+    broadcastUpdateStatus(status);
+  });
+
+  updateManager.on('progress', (progress) => {
+    broadcastUpdateProgress(progress);
+  });
 }
 
 /**
@@ -545,6 +588,9 @@ async function createMainWindow() {
 }
 
 function terminateAllManagedServices() {
+  if (updateManager) {
+    updateManager.stopPeriodicChecks();
+  }
   if (backendSupervisor) {
     appendDesktopLog('info', '[Electron] Stopping managed backend and worker processes...');
     backendSupervisor.stop();
@@ -647,6 +693,32 @@ registerSecureIpcHandler('shell:openExternal', async (_event, url) => {
   return false;
 });
 
+registerSecureIpcHandler('updater:check', async (_event, feedUrl) => {
+  if (!updateManager) throw new Error('Update manager not initialized');
+  const safeFeedUrl = typeof feedUrl === 'string' && feedUrl.trim() ? feedUrl.trim() : undefined;
+  return await updateManager.checkForUpdates(safeFeedUrl);
+});
+
+registerSecureIpcHandler('updater:getStatus', () => {
+  if (!updateManager) return { state: 'idle', currentVersion: app.getVersion() };
+  return updateManager.getStatus();
+});
+
+registerSecureIpcHandler('updater:download', async () => {
+  if (!updateManager) throw new Error('Update manager not initialized');
+  return await updateManager.downloadUpdate();
+});
+
+registerSecureIpcHandler('updater:cancelDownload', () => {
+  if (!updateManager) return false;
+  return updateManager.cancelDownload();
+});
+
+registerSecureIpcHandler('updater:install', async () => {
+  if (!updateManager) throw new Error('Update manager not initialized');
+  return await updateManager.installUpdate();
+});
+
 // Sanity assertion: every allowlisted invoke channel was registered
 for (const ch of ALLOWED_IPC_INVOKE_CHANNELS) {
   assertAllowedIpcChannel(ch);
@@ -673,6 +745,14 @@ app.whenReady().then(async () => {
   }
 
   await createMainWindow();
+
+  // Non-blocking auto-check for updates after startup
+  setTimeout(() => {
+    if (updateManager) {
+      updateManager.checkForUpdates().catch(() => {});
+      updateManager.startPeriodicChecks();
+    }
+  }, 5000);
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {

@@ -10,10 +10,8 @@ Evaluates and classifies all scanner findings across baseline and patched worksp
 6. INCOMPARABLE: Scanners errored/timed out, or baseline finding was never reproduced in baseline workspace.
 """
 from dataclasses import dataclass, field
-import os
-from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from ..scanner.base import NormalizedFinding
 from ..schemas.verification import (

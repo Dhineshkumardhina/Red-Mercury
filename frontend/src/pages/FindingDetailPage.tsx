@@ -11,7 +11,6 @@ import {
   Loader2,
   FolderGit2,
   FileCode,
-  CheckCircle2,
 } from 'lucide-react';
 import {
   api,

@@ -7,7 +7,7 @@ Enforces:
 4. Strict JSON schema contract for LLM outputs.
 """
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from ..scanner.base import redact_secrets
 

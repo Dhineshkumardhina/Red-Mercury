@@ -25,7 +25,6 @@ from .patch_applier import apply_patch_to_workspace
 from .patch_parser import parse_unified_diff
 from .runner import run_pytest_in_workspace, run_scanners_on_directory
 from .workspace import calculate_directory_hash, create_verification_workspace
-from ..core.audit import record_audit_event
 from ..core.errors import NotFoundError, ValidationError
 from ..core.logging import get_logger
 from ..evidence.sanitizer import compute_evidence_hash, sanitize_evidence_text, sanitize_payload

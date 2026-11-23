@@ -11,16 +11,15 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from ...core.audit import record_audit_event
 from ...core.auth import verify_repository_ownership
 from ...core.config import settings
-from ...core.errors import ForbiddenError, NotFoundError, SecurityPolicyViolationError, UnauthorizedError, ValidationError
+from ...core.errors import NotFoundError, SecurityPolicyViolationError, UnauthorizedError, ValidationError
 from ...core.ingestion import get_workspace_root
 from ...core.logging import get_logger
-from ...models.finding import SecurityFinding
 from ...models.github import GitHubIntegration, PullRequestScan, RepositoryGitHubLink
 from ...models.repository import Repository
 from ...models.user import User
@@ -41,12 +40,7 @@ from .schemas import (
     RepositoryGitHubLinkRequest,
     RepositoryGitHubLinkResponse,
 )
-from .webhook import (
-    claim_webhook_delivery,
-    finalize_webhook_delivery,
-    record_and_check_replay,
-    verify_webhook_signature,
-)
+from .webhook import claim_webhook_delivery, finalize_webhook_delivery, verify_webhook_signature
 
 logger = get_logger("redmercury.github.service")
 
