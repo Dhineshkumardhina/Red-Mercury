@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, safeStorage, session } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
@@ -527,6 +527,8 @@ async function createMainWindow() {
       contextIsolation: true,
       sandbox: true,
       webSecurity: true,
+      spellcheck: false,
+      navigateOnDragDrop: false,
     },
   });
 
@@ -580,6 +582,12 @@ async function createMainWindow() {
       shell.openExternal(url);
     }
     return { action: 'deny' };
+  });
+
+  // Security Hardening: block arbitrary <webview> attachments
+  mainWindow.webContents.on('will-attach-webview', (event) => {
+    appendDesktopLog('warn', '[Electron] Blocked unauthorized <webview> attachment');
+    event.preventDefault();
   });
 
   mainWindow.on('closed', () => {
@@ -726,6 +734,16 @@ for (const ch of ALLOWED_IPC_INVOKE_CHANNELS) {
 
 // App lifecycle
 app.whenReady().then(async () => {
+  // Global session security hardening: deny arbitrary web permissions
+  if (session && session.defaultSession) {
+    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+      callback(false);
+    });
+    session.defaultSession.setPermissionCheckHandler(() => {
+      return false;
+    });
+  }
+
   configureApplicationMenu();
   initializeDesktopServices();
   createSplashScreen();

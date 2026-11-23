@@ -106,8 +106,25 @@ def _safe_extract_tar(archive_path: Path, dest_dir: Path) -> None:
         tf.extractall(resolved_dest)
 
 
-def prepare_python_runtime(target: str, runtime_dir: Path) -> None:
+def prepare_python_runtime(target: str, runtime_dir: Path, force: bool = False) -> None:
     spec = PYTHON_STANDALONE_ASSETS[target]
+    python_bin = runtime_dir / spec["python_rel"]
+    req_file = REPO_ROOT / "backend" / "requirements.txt"
+
+    # Fast-path: Reuse verified existing runtime if core dependencies are already present
+    if not force and python_bin.exists():
+        try:
+            check_proc = subprocess.run(
+                [str(python_bin), "-c", "import fastapi, uvicorn, sqlalchemy, pydantic, bandit"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if check_proc.returncode == 0:
+                print(f"[bundle] Using verified cached Python runtime at {runtime_dir}")
+                return
+        except Exception:
+            pass
+
     archive_name = f"python-{target}-{PYTHON_STANDALONE_RELEASE}.tar.gz"
     archive_path = download_verified(spec["url"], spec["sha256"], CACHE_DIR / archive_name)
 
@@ -125,18 +142,16 @@ def prepare_python_runtime(target: str, runtime_dir: Path) -> None:
     shutil.move(str(inner_python), str(runtime_dir))
     shutil.rmtree(extract_tmp, ignore_errors=True)
 
-    python_bin = runtime_dir / spec["python_rel"]
     if not python_bin.exists():
         raise RuntimeError(f"Bundled Python executable missing at {python_bin}")
 
-    req_file = REPO_ROOT / "backend" / "requirements.txt"
     print(f"[bundle] Installing production Python requirements into {runtime_dir}...")
     subprocess.run(
-        [str(python_bin), "-m", "pip", "install", "--no-cache-dir", "--upgrade", "pip"],
+        [str(python_bin), "-m", "pip", "install", "--prefer-binary", "--upgrade", "pip"],
         check=True,
     )
     subprocess.run(
-        [str(python_bin), "-m", "pip", "install", "--no-cache-dir", "-r", str(req_file)],
+        [str(python_bin), "-m", "pip", "install", "--prefer-binary", "-r", str(req_file)],
         check=True,
     )
 
@@ -245,6 +260,11 @@ def main() -> int:
         action="store_true",
         help="Skip downloading/installing Python runtime (reuse existing staged runtime)",
     )
+    parser.add_argument(
+        "--force-runtime",
+        action="store_true",
+        help="Force re-download and re-install of Python runtime even if valid existing runtime exists",
+    )
     args = parser.parse_args()
 
     # Keep active staging cleanly populated at build/staging/active for electron-builder extraResources
@@ -257,7 +277,7 @@ def main() -> int:
     backend_dir = target_dir / "backend"
 
     if not args.skip_runtime:
-        prepare_python_runtime(args.target, runtime_dir)
+        prepare_python_runtime(args.target, runtime_dir, force=args.force_runtime)
     prepare_gitleaks_binary(args.target, bin_dir)
     prepare_clean_backend(backend_dir)
 
