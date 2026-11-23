@@ -97,7 +97,7 @@ jobs:
       - name: "Generate Ed25519-Signed Update Manifest"
         shell: pwsh
         env:
-          REDMERCURY_UPDATE_SIGNING_KEY: ${{ secrets.REDMERCURY_UPDATE_SIGNING_KEY }}
+          REDMERCURY_UPDATE_SIGNING_KEY: ${{ secrets['REDMERCURY_UPDATE_SIGNING_KEY'] }}
         run: |
           $pkgVersion = (Get-Content package.json | ConvertFrom-Json).version
           if ($env:REDMERCURY_UPDATE_SIGNING_KEY) {
