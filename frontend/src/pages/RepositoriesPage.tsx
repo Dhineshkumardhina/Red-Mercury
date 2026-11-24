@@ -31,6 +31,7 @@ import {
   ErrorMessage,
   EmptyState,
   TestSelector,
+  DEFAULT_FALLBACK_TOOLS,
 } from '../components/common';
 import { ScanModal } from '../components/modals/ScanModal';
 
@@ -65,7 +66,7 @@ export const RepositoriesPage: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Security test selection state
-  const [scannerTools, setScannerTools] = useState<ScannerToolInfo[]>([]);
+  const [scannerTools, setScannerTools] = useState<ScannerToolInfo[]>(DEFAULT_FALLBACK_TOOLS);
   const [isLoadingTools, setIsLoadingTools] = useState(false);
   const [selectedIngestTools, setSelectedIngestTools] = useState<string[]>([
     'bandit',
@@ -189,6 +190,15 @@ export const RepositoriesPage: React.FC = () => {
     setRegisterError(null);
     setUploadSuccessMsg(null);
     setIsDragOver(false);
+    setSelectedIngestTools([
+      'bandit',
+      'injection_scanner',
+      'owasp_tools',
+      'gitleaks',
+      'secret_detector',
+      'pip_audit',
+      'trivy_sca',
+    ]);
   };
 
   const handleBrowseLocalFolder = async () => {
