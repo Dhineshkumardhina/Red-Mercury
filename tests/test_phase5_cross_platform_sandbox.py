@@ -14,8 +14,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def test_detect_docker_installation_supports_windows_appdata_and_macos_paths():
     """Docker CLI resolution must detect per-user Windows AppData and macOS GUI paths."""
-    appdata_docker = sandbox.os.path.expandvars(r"%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin\docker.exe")
+    mock_appdata = r"C:\Users\testuser\AppData\Local"
+    appdata_docker = rf"{mock_appdata}\Programs\DockerDesktop\resources\bin\docker.exe"
     with (
+        patch.dict(sandbox.os.environ, {"LOCALAPPDATA": mock_appdata}),
         patch.object(sandbox.shutil, "which", return_value=None),
         patch.object(sandbox.platform, "system", return_value="Windows"),
         patch.object(sandbox.os.path, "isfile", side_effect=lambda p: p == appdata_docker),
