@@ -59,9 +59,10 @@ def resolve_docker_binary() -> str:
     """Resolve Docker CLI binary, checking standard Windows/macOS install locations when PATH misses it."""
     if shutil.which("docker"):
         return "docker"
+    local_app_data = os.environ.get("LOCALAPPDATA") or os.path.expandvars(r"%LOCALAPPDATA%")
     candidates = (
         [
-            os.path.expandvars(r"%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin\docker.exe"),
+            rf"{local_app_data}\Programs\DockerDesktop\resources\bin\docker.exe" if local_app_data and "%" not in local_app_data else None,
             r"C:\Program Files\Docker\Docker\resources\bin\docker.exe",
         ]
         if platform.system() == "Windows"
