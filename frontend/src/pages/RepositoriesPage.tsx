@@ -199,6 +199,7 @@ export const RepositoriesPage: React.FC = () => {
       'pip_audit',
       'trivy_sca',
     ]);
+    setIsCustomizingTests(false);
   };
 
   const handleBrowseLocalFolder = async () => {
@@ -1021,7 +1022,7 @@ export const RepositoriesPage: React.FC = () => {
                   )}
                 </div>
 
-                {autoScanEnabled && (
+                {autoScanEnabled && isCustomizingTests && (
                   <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-slate-600 text-[11px] font-medium">
