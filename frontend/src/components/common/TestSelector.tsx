@@ -136,6 +136,26 @@ const CATEGORIES = [
   { id: 'api_dynamic', label: 'API & Dynamic' },
 ];
 
+export const DEFAULT_FALLBACK_TOOLS: ScannerToolInfo[] = [
+  { name: 'semgrep', display_name: 'Semgrep OSS', category: 'sast', is_available: false, version: undefined },
+  { name: 'bandit', display_name: 'Bandit Python SAST', category: 'sast', is_available: true, version: 'python.exe' },
+  { name: 'injection_scanner', display_name: 'SQL & NoSQL Injection Scanner', category: 'sast', is_available: true, version: '1.0.0-injection-ast' },
+  { name: 'owasp_tools', display_name: 'OWASP Security Tools & Top 10 Suite', category: 'sast', is_available: true, version: '2025.1.0-owasp-top10' },
+  { name: 'trivy_sca', display_name: 'Trivy Dependency Scanner (SCA)', category: 'sca', is_available: true, version: '1.0.0-builtin' },
+  { name: 'pip_audit', display_name: 'pip-audit Dependency SCA', category: 'sca', is_available: true, version: 'pip-audit 2.10.1' },
+  { name: 'gitleaks', display_name: 'Gitleaks Secret Scanner', category: 'secret', is_available: true, version: '8.18.2' },
+  { name: 'secret_detector', display_name: 'Red Mercury Secret Engine', category: 'secret', is_available: true, version: 'Red Mercury Secret Engine v1.0.0' },
+  { name: 'vuln_scanner', display_name: 'Vulnerability & IaC Scanner', category: 'vulnerability_scanning', is_available: true, version: '1.0.0-builtin' },
+  { name: 'dast_scanner', display_name: 'Dynamic Application Security Testing (DAST)', category: 'dast', is_available: true, version: '1.0.0-builtin' },
+  { name: 'api_security', display_name: 'API Security Testing (OWASP API Top 10)', category: 'api_security', is_available: true, version: '1.0.0-builtin' },
+  { name: 'iast_scanner', display_name: 'Interactive Application Security Testing (IAST)', category: 'iast', is_available: true, version: '1.0.0-runtime-sensor' },
+  { name: 'pentest_scanner', display_name: 'Automated Penetration Testing (Recon)', category: 'penetration_testing', is_available: true, version: '1.0.0-builtin' },
+  { name: 'iac_scanner', display_name: 'Infrastructure as Code (IaC) Scanner', category: 'iac', is_available: true, version: '1.0.0-builtin-ast' },
+  { name: 'container_base_scanner', display_name: 'Container Base Image Scanner', category: 'container_security', is_available: true, version: '1.0.0-builtin-os-analyzer' },
+  { name: 'license_compliance_scanner', display_name: 'Open Source License Compliance', category: 'license_compliance', is_available: true, version: '1.0.0-builtin-spdx-engine' },
+  { name: 'supply_chain_scanner', display_name: 'Malicious Package & Supply Chain Defense', category: 'supply_chain_defense', is_available: true, version: '1.0.0-builtin-supply-chain' },
+];
+
 export const TestSelector: React.FC<TestSelectorProps> = ({
   tools,
   selectedTools,
@@ -143,10 +163,14 @@ export const TestSelector: React.FC<TestSelectorProps> = ({
   isLoading = false,
   compact = false,
 }) => {
+  const effectiveTools = useMemo(() => {
+    return tools && tools.length > 0 ? tools : DEFAULT_FALLBACK_TOOLS;
+  }, [tools]);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
 
-  const availableTools = useMemo(() => tools.filter(t => t.is_available), [tools]);
+  const availableTools = useMemo(() => effectiveTools.filter(t => t.is_available), [effectiveTools]);
   const availableToolNames = useMemo(() => availableTools.map(t => t.name), [availableTools]);
 
   // Presets
@@ -218,9 +242,9 @@ export const TestSelector: React.FC<TestSelectorProps> = ({
 
       return true;
     });
-  }, [tools, activeCategory, searchQuery]);
+  }, [effectiveTools, activeCategory, searchQuery]);
 
-  if (isLoading) {
+  if (isLoading && (!tools || tools.length === 0)) {
     return (
       <div className="p-6 text-center text-xs text-slate-500 bg-slate-50 rounded-lg border border-slate-200 animate-pulse">
         Discovering available security engines and test suites...

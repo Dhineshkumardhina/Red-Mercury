@@ -103,23 +103,25 @@ export const RepositoriesPage: React.FC = () => {
     }
   };
 
+  const loadScannerTools = async () => {
+    setIsLoadingTools(true);
+    try {
+      const tools = await api.getScannerTools();
+      const toolList = Array.isArray(tools) ? tools : [];
+      setScannerTools(toolList);
+      const available = toolList.filter(t => t && t.is_available).map(t => t.name);
+      const defaults = ['bandit', 'injection_scanner', 'owasp_tools', 'gitleaks', 'secret_detector', 'pip_audit', 'trivy_sca'].filter(name => available.includes(name));
+      setSelectedIngestTools(defaults.length > 0 ? defaults : available);
+    } catch (err) {
+      console.error('Failed to load scanner tools:', err);
+    } finally {
+      setIsLoadingTools(false);
+    }
+  };
+
   useEffect(() => {
     loadRepositories();
-    setIsLoadingTools(true);
-    api.getScannerTools()
-      .then((tools) => {
-        const toolList = Array.isArray(tools) ? tools : [];
-        setScannerTools(toolList);
-        const available = toolList.filter(t => t && t.is_available).map(t => t.name);
-        const defaults = ['bandit', 'injection_scanner', 'owasp_tools', 'gitleaks', 'secret_detector', 'pip_audit', 'trivy_sca'].filter(name => available.includes(name));
-        setSelectedIngestTools(defaults.length > 0 ? defaults : available);
-      })
-      .catch((err) => {
-        console.error('Failed to load scanner tools:', err);
-      })
-      .finally(() => {
-        setIsLoadingTools(false);
-      });
+    loadScannerTools();
   }, []);
 
   // Map live repositories into standardized format
@@ -309,6 +311,9 @@ export const RepositoriesPage: React.FC = () => {
             type="button"
             onClick={() => {
               resetModalForm();
+              if (scannerTools.length === 0) {
+                loadScannerTools();
+              }
               setIsRegisterModalOpen(true);
             }}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-medium text-xs shadow-xs transition-colors cursor-pointer"
@@ -464,6 +469,9 @@ export const RepositoriesPage: React.FC = () => {
             actionLabel="Add Repository"
             onAction={() => {
               resetModalForm();
+              if (scannerTools.length === 0) {
+                loadScannerTools();
+              }
               setIsRegisterModalOpen(true);
             }}
           />
