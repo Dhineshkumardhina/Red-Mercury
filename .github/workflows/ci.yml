@@ -99,6 +99,18 @@ jobs:
           set -o pipefail
           python -m pytest tests/ -v --tb=short --durations=25 --timeout=120 --junitxml=.redmercury_artifacts/pytest-results.xml 2>&1 | tee .redmercury_artifacts/pytest-output.log
 
+      - name: "Summarize Pytest Results & Failure Log"
+        if: always()
+        run: |
+          echo "### Pytest Execution Summary" >> $GITHUB_STEP_SUMMARY
+          if [ -f .redmercury_artifacts/pytest-output.log ]; then
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            tail -n 120 .redmercury_artifacts/pytest-output.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No pytest output log found." >> $GITHUB_STEP_SUMMARY
+          fi
+
       - name: "Upload Backend Test Results Artifact"
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
