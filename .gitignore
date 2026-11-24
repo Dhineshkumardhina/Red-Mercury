@@ -21,7 +21,8 @@ env/
 venv/
 .venv/
 ENV/
-build/
+build/staging/
+build/cache/
 develop-eggs/
 dist/
 downloads/

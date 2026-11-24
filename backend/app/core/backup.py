@@ -658,7 +658,11 @@ def initialize_local_database(
             if not ok_int:
                 raise RuntimeError(f"Local database integrity check failed for {db_path}: {detail}")
 
-    Base.metadata.create_all(bind=active_engine)
+    try:
+        Base.metadata.create_all(bind=active_engine)
+    except Exception as exc:
+        if "already exists" not in str(exc).lower():
+            raise
 
     ini_path = _find_alembic_ini(alembic_ini_path)
     if ini_path is not None:
