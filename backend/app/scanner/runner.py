@@ -188,6 +188,20 @@ def run_security_scan(
             seen_finding_keys.add(dedup_key)
 
             title_text = f.scanner_message[:250] if f.scanner_message else f"Security finding {f.scanner_rule_id}"
+            
+            # Ensure code_excerpt is populated with actual source code if available
+            excerpt_text = f.evidence_reference
+            if not excerpt_text and target_dir and f.file_path:
+                try:
+                    src_file = Path(target_dir) / f.file_path
+                    if src_file.is_file():
+                        with open(src_file, "r", encoding="utf-8", errors="ignore") as sfp:
+                            s_lines = sfp.readlines()
+                            if 1 <= f.start_line <= len(s_lines):
+                                excerpt_text = s_lines[f.start_line - 1].strip()
+                except Exception:
+                    pass
+
             finding_record = SecurityFinding(
                 repo_id=repo.id,
                 scan_id=scan.id,
@@ -203,8 +217,8 @@ def run_security_scan(
                 file_path=f.file_path,
                 line_number=f.start_line,
                 line_information=f"{f.start_line}-{f.end_line}" if f.start_line != f.end_line else str(f.start_line),
-                evidence_reference=f.evidence_reference,
-                code_excerpt=f.evidence_reference,
+                evidence_reference=f.evidence_reference or excerpt_text,
+                code_excerpt=excerpt_text or f.evidence_reference,
                 status="open",
                 finding_status="open",
             )

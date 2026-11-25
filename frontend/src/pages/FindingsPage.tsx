@@ -16,10 +16,11 @@ import {
   Eye,
   ChevronRight,
   ArrowRight,
-  Code2,
   Loader2,
   AlertCircle,
   FileCode,
+  Code2,
+  Wrench,
 } from 'lucide-react';
 import { api, ApiFinding, ApiRepository } from '../services/api';
 import { SecurityFinding, VerificationItem } from '../types';
@@ -115,10 +116,12 @@ export const FindingsPage: React.FC = () => {
     setSearchParams(newParams, { replace: true });
   };
 
-  // Convert raw findings to enriched items
+  // Convert raw findings to enriched items with resolved repo names
   const enrichedFindings: SecurityFinding[] = useMemo(() => {
     return liveFindings.map(lf => {
       const isFixReady = lf.remediation_readiness === 'VERIFIED_FIX_READY' || !!lf.pr_number;
+      const matchedRepo = repositories.find(r => r.id === lf.repo_id);
+      const friendlyRepoName = matchedRepo?.name || (lf.repo_id.length > 20 ? 'project-repository' : lf.repo_id);
 
       return {
         id: lf.id,
@@ -128,17 +131,18 @@ export const FindingsPage: React.FC = () => {
         title: lf.title,
         severity: lf.severity.toLowerCase() as any,
         cvss: lf.severity === 'CRITICAL' ? 9.8 : lf.severity === 'HIGH' ? 8.2 : lf.severity === 'MEDIUM' ? 5.5 : 3.2,
-        repo: lf.repo_id,
+        repo: friendlyRepoName,
         branch: 'main',
         filePath: lf.file_path,
         line: lf.line_number,
         engine: lf.scanner_name,
         ruleId: lf.cwe || 'security.rule',
         description: lf.title,
+        codeExcerpt: lf.code_excerpt,
         taintTrace: {
-          source: 'Untrusted user input vector',
-          flow: ['Data propagation via handler parameters', 'Unsanitized input sink'],
-          sink: 'Execution / Storage sink boundary',
+          source: 'User input / parameter',
+          flow: ['Data propagation'],
+          sink: 'Sink execution',
         },
         remediationStatus: isFixReady ? 'verified_patch' : 'needs_patch',
         prNumber: lf.pr_number,
@@ -154,7 +158,7 @@ export const FindingsPage: React.FC = () => {
         } : undefined,
       };
     });
-  }, [liveFindings]);
+  }, [liveFindings, repositories]);
 
   // Overall Statistics for KPI Cards
   const stats = useMemo(() => {
@@ -283,7 +287,7 @@ export const FindingsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Interactive KPI Summary Cards */}
+        {/* Clean Monochromatic KPI Summary Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 mt-5">
           {/* Card: Total */}
           <button
@@ -294,7 +298,7 @@ export const FindingsPage: React.FC = () => {
             }}
             className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
               selectedSeverity === 'all' && selectedStatus === 'all'
-                ? 'bg-slate-50 border-slate-400 shadow-2xs ring-1 ring-slate-400'
+                ? 'bg-slate-50 border-slate-900 ring-1 ring-slate-900 shadow-2xs'
                 : 'bg-white border-slate-200/80 hover:border-slate-300'
             }`}
           >
@@ -302,8 +306,8 @@ export const FindingsPage: React.FC = () => {
               <span className="font-medium">All Findings</span>
               <Shield className="w-4 h-4 text-slate-400" />
             </div>
-            <div className="text-2xl font-semibold text-slate-900">{stats.total}</div>
-            <div className="text-[11px] text-slate-400 mt-0.5">Across monitored repositories</div>
+            <div className="text-2xl font-bold text-slate-900">{stats.total}</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">Across monitored codebases</div>
           </button>
 
           {/* Card: Critical */}
@@ -312,15 +316,14 @@ export const FindingsPage: React.FC = () => {
             onClick={() => handleSeverityChange('critical')}
             className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
               selectedSeverity === 'critical'
-                ? 'bg-rose-50/60 border-rose-400 shadow-2xs ring-1 ring-rose-400'
-                : 'bg-white border-slate-200/80 hover:border-rose-200'
+                ? 'bg-slate-50 border-slate-900 ring-1 ring-slate-900 shadow-2xs'
+                : 'bg-white border-slate-200/80 hover:border-slate-300'
             }`}
           >
-            <div className="flex items-center justify-between text-xs text-rose-600 mb-1 font-medium">
+            <div className="flex items-center justify-between text-xs text-slate-600 mb-1 font-medium">
               <span>Critical</span>
-              <span className="w-2 h-2 rounded-full bg-rose-500"></span>
             </div>
-            <div className="text-2xl font-semibold text-rose-600">{stats.critical}</div>
+            <div className="text-2xl font-bold text-slate-900">{stats.critical}</div>
             <div className="text-[11px] text-slate-400 mt-0.5">Immediate action required</div>
           </button>
 
@@ -330,15 +333,14 @@ export const FindingsPage: React.FC = () => {
             onClick={() => handleSeverityChange('high')}
             className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
               selectedSeverity === 'high'
-                ? 'bg-amber-50/60 border-amber-400 shadow-2xs ring-1 ring-amber-400'
-                : 'bg-white border-slate-200/80 hover:border-amber-200'
+                ? 'bg-slate-50 border-slate-900 ring-1 ring-slate-900 shadow-2xs'
+                : 'bg-white border-slate-200/80 hover:border-slate-300'
             }`}
           >
-            <div className="flex items-center justify-between text-xs text-amber-600 mb-1 font-medium">
+            <div className="flex items-center justify-between text-xs text-slate-600 mb-1 font-medium">
               <span>High Risk</span>
-              <span className="w-2 h-2 rounded-full bg-amber-500"></span>
             </div>
-            <div className="text-2xl font-semibold text-amber-600">{stats.high}</div>
+            <div className="text-2xl font-bold text-slate-900">{stats.high}</div>
             <div className="text-[11px] text-slate-400 mt-0.5">High priority remediation</div>
           </button>
 
@@ -348,15 +350,14 @@ export const FindingsPage: React.FC = () => {
             onClick={() => handleSeverityChange('medium')}
             className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
               selectedSeverity === 'medium'
-                ? 'bg-blue-50/60 border-blue-400 shadow-2xs ring-1 ring-blue-400'
-                : 'bg-white border-slate-200/80 hover:border-blue-200'
+                ? 'bg-slate-50 border-slate-900 ring-1 ring-slate-900 shadow-2xs'
+                : 'bg-white border-slate-200/80 hover:border-slate-300'
             }`}
           >
-            <div className="flex items-center justify-between text-xs text-blue-600 mb-1 font-medium">
+            <div className="flex items-center justify-between text-xs text-slate-600 mb-1 font-medium">
               <span>Medium / Low</span>
-              <span className="w-2 h-2 rounded-full bg-blue-500"></span>
             </div>
-            <div className="text-2xl font-semibold text-slate-800">{stats.mediumLow}</div>
+            <div className="text-2xl font-bold text-slate-900">{stats.mediumLow}</div>
             <div className="text-[11px] text-slate-400 mt-0.5">Standard triage</div>
           </button>
 
@@ -366,21 +367,21 @@ export const FindingsPage: React.FC = () => {
             onClick={() => setSelectedStatus(selectedStatus === 'fix_ready' ? 'all' : 'fix_ready')}
             className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer col-span-2 sm:col-span-1 ${
               selectedStatus === 'fix_ready'
-                ? 'bg-emerald-50/60 border-emerald-400 shadow-2xs ring-1 ring-emerald-400'
-                : 'bg-white border-slate-200/80 hover:border-emerald-200'
+                ? 'bg-slate-50 border-slate-900 ring-1 ring-slate-900 shadow-2xs'
+                : 'bg-white border-slate-200/80 hover:border-slate-300'
             }`}
           >
-            <div className="flex items-center justify-between text-xs text-emerald-700 mb-1 font-medium">
+            <div className="flex items-center justify-between text-xs text-slate-600 mb-1 font-medium">
               <span>Fix Ready</span>
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              <CheckCircle2 className="w-4 h-4 text-slate-400" />
             </div>
-            <div className="text-2xl font-semibold text-emerald-700">{stats.fixesReady}</div>
+            <div className="text-2xl font-bold text-slate-900">{stats.fixesReady}</div>
             <div className="text-[11px] text-slate-400 mt-0.5">Verified fixes ready</div>
           </button>
         </div>
       </div>
 
-      {/* Category Pills & Filter Toolbar */}
+      {/* Category Tabs & Filter Toolbar */}
       <div className="px-6 lg:px-8 py-3.5 bg-slate-50 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
         {/* Category Segment Control */}
         <div className="inline-flex p-0.5 rounded-lg bg-slate-200/70 border border-slate-200 self-start">
@@ -404,7 +405,7 @@ export const FindingsPage: React.FC = () => {
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <Bug className="w-3.5 h-3.5 text-amber-500" />
+            <Bug className="w-3.5 h-3.5 text-slate-500" />
             <span>Vulnerabilities ({stats.vulnerabilities})</span>
           </button>
           <button
@@ -416,7 +417,7 @@ export const FindingsPage: React.FC = () => {
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <Key className="w-3.5 h-3.5 text-rose-500" />
+            <Key className="w-3.5 h-3.5 text-slate-500" />
             <span>Secrets ({stats.secrets})</span>
           </button>
         </div>
@@ -534,7 +535,7 @@ export const FindingsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={handleResetFilters}
-                className="text-blue-600 hover:underline cursor-pointer"
+                className="text-slate-700 underline hover:text-slate-900 cursor-pointer"
               >
                 Clear all
               </button>
@@ -585,7 +586,6 @@ export const FindingsPage: React.FC = () => {
             {filteredFindings.map(finding => {
               const isExpanded = expandedFindingId === finding.id;
               const isFixReady = finding.remediationReadiness === 'VERIFIED_FIX_READY' || finding.remediationStatus === 'verified_patch';
-              const isPatchProposed = finding.remediationReadiness === 'PATCH_PENDING_REVIEW';
               const isSecret = finding.cwe.includes('798') || finding.engine.toLowerCase().includes('secret') || finding.engine.toLowerCase().includes('gitleaks');
 
               return (
@@ -597,7 +597,7 @@ export const FindingsPage: React.FC = () => {
                 >
                   {/* Card Header Row */}
                   <div
-                    onClick={() => navigate(`/findings/${finding.id}`)}
+                    onClick={() => setExpandedFindingId(isExpanded ? null : finding.id)}
                     className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 cursor-pointer group"
                   >
                     {/* Left: Severity & Finding Info */}
@@ -608,14 +608,14 @@ export const FindingsPage: React.FC = () => {
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap mb-1">
-                          <span className="font-semibold text-slate-900 text-sm group-hover:text-blue-600 transition-colors">
+                          <span className="font-semibold text-slate-900 text-sm group-hover:text-slate-700 transition-colors">
                             {finding.title}
                           </span>
                           <span className="px-1.5 py-0.2 rounded text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
                             {finding.cwe}
                           </span>
                           {isSecret && (
-                            <span className="px-1.5 py-0.2 rounded text-[10px] font-medium bg-rose-50 text-rose-700 border border-rose-200">
+                            <span className="px-1.5 py-0.2 rounded text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
                               Secret
                             </span>
                           )}
@@ -640,21 +640,15 @@ export const FindingsPage: React.FC = () => {
                     </div>
 
                     {/* Right: Status & Actions */}
-                    <div className="flex items-center gap-2.5 shrink-0 self-end md:self-center" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center gap-2 shrink-0 self-end md:self-center" onClick={e => e.stopPropagation()}>
                       {/* Fix Status Pill */}
                       {isFixReady ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200">
+                          <CheckCircle2 className="w-3 h-3 text-slate-700" />
                           <span>Fix Ready</span>
                         </span>
-                      ) : isPatchProposed ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">
-                          <Code2 className="w-3 h-3 text-blue-600" />
-                          <span>Patch Proposed</span>
-                        </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
-                          <Search className="w-3 h-3 text-slate-400" />
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-50 text-slate-600 border border-slate-200">
                           <span>Needs Review</span>
                         </span>
                       )}
@@ -674,14 +668,14 @@ export const FindingsPage: React.FC = () => {
                         <span className="hidden sm:inline">{isExpanded ? 'Less' : 'Preview'}</span>
                       </button>
 
-                      {/* Run Fix Verification Button */}
+                      {/* Verify Fix Button */}
                       <button
                         type="button"
                         onClick={e => {
                           e.stopPropagation();
                           navigate(`/verification?finding_id=${finding.id}`);
                         }}
-                        className="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                        className="px-3 py-1 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
                         title="Verify fix in isolated sandbox"
                       >
                         <Play className="w-3 h-3 fill-current" />
@@ -693,7 +687,7 @@ export const FindingsPage: React.FC = () => {
                         <button
                           type="button"
                           onClick={e => handleOpenDiff(finding, e)}
-                          className="px-2.5 py-1 rounded-lg border border-slate-200 text-xs font-medium text-blue-600 hover:bg-blue-50 transition-colors cursor-pointer"
+                          className="px-2 py-1 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
                         >
                           Diff
                         </button>
@@ -711,59 +705,58 @@ export const FindingsPage: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Expanded Quick Inspection Drawer */}
+                  {/* Expanded Clean Inspection Drawer */}
                   {isExpanded && (
                     <div className="px-4 py-3.5 bg-slate-50/70 border-t border-slate-200/80 rounded-b-xl text-xs space-y-3">
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        <div className="p-2.5 rounded-lg bg-white border border-slate-200/80">
-                          <span className="text-[10px] text-slate-500 uppercase font-semibold block">Risk Score</span>
-                          <span className="font-semibold text-slate-900 text-sm">{finding.priorityScore?.toFixed(0)}/100</span>
-                          <span className="text-[10px] text-slate-500 block mt-0.5">Contextual priority weight</span>
-                        </div>
-                        <div className="p-2.5 rounded-lg bg-white border border-slate-200/80">
-                          <span className="text-[10px] text-slate-500 uppercase font-semibold block">Scanner Rule</span>
-                          <span className="font-mono text-slate-800 text-[11px] truncate block">{finding.ruleId}</span>
-                          <span className="text-[10px] text-slate-500 block mt-0.5">AST pattern match</span>
-                        </div>
-                        <div className="p-2.5 rounded-lg bg-white border border-slate-200/80">
-                          <span className="text-[10px] text-slate-500 uppercase font-semibold block">Remediation Status</span>
-                          <span className="font-medium text-slate-800 text-xs block">
-                            {isFixReady ? 'Verified patch available' : 'Awaiting patch synthesis'}
+                      {/* Code Location & Real Excerpt Block */}
+                      <div className="p-3 bg-slate-900 rounded-lg text-slate-200 font-mono text-xs overflow-x-auto">
+                        <div className="text-[11px] font-sans font-medium text-slate-400 mb-1.5 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <Code2 className="w-3.5 h-3.5" />
+                            <span>{finding.filePath} (line {finding.line})</span>
                           </span>
-                          <span className="text-[10px] text-slate-500 block mt-0.5">Verification status</span>
+                          <span className="text-[10px] text-slate-500 font-mono">{finding.cwe}</span>
                         </div>
+                        <code className="text-slate-100 block whitespace-pre">
+                          {finding.codeExcerpt || finding.title}
+                        </code>
                       </div>
 
-                      {/* Taint Trace Evidence summary */}
-                      <div className="p-3 bg-slate-900 rounded-lg text-slate-200 font-mono text-[11px] space-y-1">
-                        <div className="flex items-center gap-2 text-amber-400">
-                          <span className="font-bold">[SOURCE]</span>
-                          <span>{finding.taintTrace.source}</span>
+                      {/* Human-Friendly Remediation Advice */}
+                      <div className="p-3 bg-white border border-slate-200/80 rounded-lg text-xs space-y-1 text-slate-700">
+                        <div className="font-semibold text-slate-900 flex items-center gap-1.5">
+                          <Wrench className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Recommended Action</span>
                         </div>
-                        <div className="flex items-center gap-2 text-rose-400">
-                          <span className="font-bold">[SINK]</span>
-                          <span>{finding.taintTrace.sink}</span>
-                        </div>
+                        <p className="text-[11px] text-slate-600 leading-relaxed">
+                          {isSecret
+                            ? 'Remove hardcoded credentials from source code. Move sensitive values to private environment variables (.env) and add the file to your .gitignore.'
+                            : finding.cwe.includes('89')
+                            ? 'Avoid raw SQL query string interpolation. Use parameterized queries with query placeholders or an ORM to prevent SQL injection.'
+                            : finding.cwe.includes('78')
+                            ? 'Do not pass unsanitized input directly to shell execution commands. Use safe library APIs with argument lists instead of shell string evaluation.'
+                            : 'Review this security finding and apply the suggested patch in an isolated sandbox to verify resolution with zero regressions.'}
+                        </p>
                       </div>
 
                       {/* Action Bar inside Drawer */}
                       <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
-                        <span className="text-slate-500 text-[11px]">
-                          Finding ID: <code className="font-mono text-slate-700 bg-white px-1.5 py-0.5 rounded border border-slate-200">{finding.id}</code>
+                        <span className="text-slate-400 text-[11px]">
+                          Scanner: <strong className="text-slate-700 font-medium">{finding.engine}</strong>
                         </span>
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
                             onClick={() => navigate(`/verification?finding_id=${finding.id}`)}
-                            className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-medium shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                            className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
                           >
                             <Play className="w-3.5 h-3.5 fill-current" />
-                            <span>Run Fix Verification</span>
+                            <span>Fix &amp; Verify in Sandbox</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => navigate(`/findings/${finding.id}`)}
-                            className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-medium shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                            className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer"
                           >
                             <span>Open Details</span>
                             <ArrowRight className="w-3.5 h-3.5" />
@@ -810,7 +803,7 @@ export const FindingsPage: React.FC = () => {
 
                         {/* Title & CWE */}
                         <td className="py-3 px-4 max-w-sm">
-                          <span className="font-semibold text-slate-900 block group-hover:text-blue-600 transition-colors truncate">
+                          <span className="font-semibold text-slate-900 block group-hover:text-slate-700 transition-colors truncate">
                             {finding.title}
                           </span>
                           <span className="text-[11px] text-slate-500 font-mono">
@@ -836,8 +829,8 @@ export const FindingsPage: React.FC = () => {
                         {/* Fix Status */}
                         <td className="py-3 px-4">
                           {isFixReady ? (
-                            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700">
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-800">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-slate-700" />
                               <span>Fix Ready</span>
                             </span>
                           ) : (
@@ -852,7 +845,7 @@ export const FindingsPage: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={e => handleOpenDiff(finding, e)}
-                                className="px-2 py-0.5 rounded border border-slate-200 text-[11px] font-medium text-blue-600 hover:bg-blue-50 cursor-pointer"
+                                className="px-2 py-0.5 rounded border border-slate-200 text-[11px] font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
                               >
                                 Diff
                               </button>

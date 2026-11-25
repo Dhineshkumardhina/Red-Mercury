@@ -118,7 +118,7 @@ export const ScanModal: React.FC<ScanModalProps> = ({
         if (statusData.status === 'queued') {
           setStatusMessage('Scan queued, starting security analysis...');
         } else if (statusData.status === 'running') {
-          setStatusMessage('Running Bandit, Semgrep, Trivy, pip-audit, and secret engines...');
+          setStatusMessage('Running code security, injection, and secret checks...');
         } else if (statusData.is_complete || ['completed', 'partial', 'failed', 'timed_out'].includes(statusData.status)) {
           completed = true;
           if (statusData.status === 'failed') {
@@ -152,36 +152,36 @@ export const ScanModal: React.FC<ScanModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60">
-      <div className="relative w-full max-w-2xl bg-white rounded-lg shadow-2xl border border-slate-200 flex flex-col max-h-[90vh] overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs animate-in fade-in duration-100">
+      <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col max-h-[90vh] overflow-hidden animate-in zoom-in-95 duration-150">
         
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+        {/* Header - Clean Monochromatic */}
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
-              <Shield className="w-5 h-5" />
+            <div className="w-8 h-8 rounded-lg bg-slate-900 text-white flex items-center justify-center">
+              <Shield className="w-4 h-4" />
             </div>
             <div>
               <h3 className="font-semibold text-slate-900 text-base">Run Security Analysis</h3>
               <p className="text-xs text-slate-500">
-                Static Application Security Testing (SAST), Dependency Composition (SCA), and Secret Detection.
+                Check code for bugs, injection vulnerabilities, and leaked secrets.
               </p>
             </div>
           </div>
           {!isScanning && (
             <button
               onClick={onClose}
-              className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition-colors cursor-pointer"
+              className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
             >
-              <X className="w-5 h-5" />
+              <X className="w-4 h-4" />
             </button>
           )}
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 overflow-y-auto space-y-5">
+        <div className="p-6 overflow-y-auto space-y-4">
           {errorMessage && (
-            <div className="p-3.5 rounded-md bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2.5">
+            <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-rose-500 mt-0.5 shrink-0" />
               <div className="flex-1">{errorMessage}</div>
             </div>
@@ -192,26 +192,26 @@ export const ScanModal: React.FC<ScanModalProps> = ({
             <>
               {/* Repository Target Selection */}
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Target Repository
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Target Project
                 </label>
                 {targetRepoName ? (
-                  <div className="px-3.5 py-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs font-medium text-slate-900 flex items-center justify-between">
+                  <div className="px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-xs font-medium text-slate-900 flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Folder className="w-4 h-4 text-blue-600" />
+                      <Folder className="w-4 h-4 text-slate-600" />
                       <span>{targetRepoName}</span>
                     </div>
-                    <span className="text-xs text-slate-500">Workspace isolated</span>
+                    <span className="text-[11px] text-slate-500">Ready</span>
                   </div>
                 ) : (
                   <select
                     value={selectedRepoId}
                     onChange={(e) => setSelectedRepoId(e.target.value)}
-                    className="w-full px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-hidden"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-900 text-xs focus:border-slate-400 focus:outline-hidden"
                   >
                     {repositories.map((repo) => (
                       <option key={repo.id} value={repo.id}>
-                        {repo.name} ({repo.source_type || 'local'}) — Health: {repo.health_score}%
+                        {repo.name} — Health: {repo.health_score}%
                       </option>
                     ))}
                   </select>
@@ -220,8 +220,8 @@ export const ScanModal: React.FC<ScanModalProps> = ({
 
               {/* Security Scanner Engines & Test Suites */}
               <div className="space-y-2">
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
-                  Select Security Tests to Execute
+                <label className="block text-xs font-semibold text-slate-700">
+                  Select Security Checks
                 </label>
                 <TestSelector
                   tools={tools}
@@ -230,28 +230,20 @@ export const ScanModal: React.FC<ScanModalProps> = ({
                   isLoading={isLoadingTools}
                 />
               </div>
-
-              <div className="p-3.5 rounded-md bg-blue-50 border border-blue-100 flex items-start gap-2.5 text-xs text-blue-900">
-                <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-                <div>
-                  <strong>Isolated Static Analysis:</strong> Analysis executes strictly within an isolated sandbox without evaluating untrusted code. Secrets and access tokens are automatically redacted.
-                </div>
-              </div>
             </>
           )}
 
           {/* Running State */}
           {isScanning && (
-            <div className="py-8 flex flex-col items-center justify-center text-center space-y-4">
-              <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
+            <div className="py-10 flex flex-col items-center justify-center text-center space-y-4">
+              <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-slate-900">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
               <div>
-                <h4 className="font-semibold text-slate-900 text-base">Scanning Repository</h4>
-                <p className="text-xs text-blue-600 font-medium mt-1 max-w-md">
+                <h4 className="font-semibold text-slate-900 text-base">Scanning Project</h4>
+                <p className="text-xs text-slate-600 mt-1 max-w-md">
                   {statusMessage}
                 </p>
-              </div>
-              <div className="px-3 py-1.5 rounded-md bg-slate-50 border border-slate-200 text-xs text-slate-600 font-sans font-medium">
-                Engines: {selectedToolNames.join(', ')}
               </div>
             </div>
           )}
@@ -260,75 +252,58 @@ export const ScanModal: React.FC<ScanModalProps> = ({
           {scanResult && !isScanning && (
             <div className="space-y-4">
               {/* Scan Status Summary Card */}
-              <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between">
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className={`text-xs font-bold uppercase px-2 py-0.5 rounded-full ${
-                      scanResult.status === 'completed'
-                        ? 'bg-emerald-100 text-emerald-700 border border-emerald-300'
-                        : scanResult.status === 'partial'
-                        ? 'bg-amber-100 text-amber-700 border border-amber-300'
-                        : 'bg-red-100 text-red-700 border border-red-300'
-                    }`}>
-                      {scanResult.status}
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded bg-slate-900 text-white">
+                      {scanResult.status === 'completed' ? 'Completed' : scanResult.status}
                     </span>
-                    <span className="text-xs text-slate-500">Scan ID: {scanResult.id}</span>
+                    <span className="text-xs text-slate-500">Scan ID: {scanResult.id.slice(0, 8)}</span>
                   </div>
-                  <div className="mt-1.5 flex items-center gap-4 text-sm text-slate-700">
+                  <div className="mt-2 flex items-center gap-4 text-xs text-slate-700">
                     <span>
                       Total Findings: <strong className="text-slate-900">{scanResult.total_findings}</strong>
                     </span>
                     {scanResult.health_score_after !== undefined && (
                       <span>
-                        Health Score: <strong className="text-blue-600">{scanResult.health_score_after}%</strong>
+                        Health Score: <strong className="text-slate-900">{scanResult.health_score_after}%</strong>
                       </span>
                     )}
                   </div>
                 </div>
 
-                <div className="text-right">
-                  <CheckCircle2 className="w-8 h-8 text-emerald-600" />
+                <div>
+                  <CheckCircle2 className="w-6 h-6 text-slate-900" />
                 </div>
               </div>
 
               {/* Scanners Breakdown Table */}
               <div>
-                <h4 className="text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
-                  Scanner Execution Details
+                <h4 className="text-xs font-semibold text-slate-700 mb-2">
+                  Check Summary
                 </h4>
                 <div className="border border-slate-200 rounded-lg overflow-hidden">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-100 text-slate-600 font-semibold border-b border-slate-200">
+                    <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
                       <tr>
-                        <th className="px-3.5 py-2.5">Engine</th>
-                        <th className="px-3.5 py-2.5">Category</th>
-                        <th className="px-3.5 py-2.5">Duration</th>
-                        <th className="px-3.5 py-2.5">Findings</th>
-                        <th className="px-3.5 py-2.5">Status</th>
+                        <th className="px-3.5 py-2">Check</th>
+                        <th className="px-3.5 py-2">Duration</th>
+                        <th className="px-3.5 py-2">Findings</th>
+                        <th className="px-3.5 py-2">Status</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-200 font-sans">
+                    <tbody className="divide-y divide-slate-100">
                       {scanResult.scanners.map((s, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50">
-                          <td className="px-3.5 py-2.5 font-sans font-medium text-slate-900">
+                        <tr key={idx} className="hover:bg-slate-50/60">
+                          <td className="px-3.5 py-2 font-medium text-slate-900">
                             {s.scanner_name}
-                            {s.version && (
-                              <span className="block text-[11px] text-slate-400 font-mono">
-                                {s.version}
-                              </span>
-                            )}
                           </td>
-                          <td className="px-3.5 py-2.5 uppercase text-slate-600">{s.category}</td>
-                          <td className="px-3.5 py-2.5 text-slate-600">{s.execution_time_seconds}s</td>
-                          <td className="px-3.5 py-2.5 font-bold text-slate-900">
+                          <td className="px-3.5 py-2 text-slate-500">{s.execution_time_seconds}s</td>
+                          <td className="px-3.5 py-2 font-semibold text-slate-900">
                             {s.findings_count}
                           </td>
-                          <td className="px-3.5 py-2.5">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                              s.status === 'success' || s.status === 'no_findings'
-                                ? 'bg-emerald-50 text-emerald-700'
-                                : 'bg-red-50 text-red-700'
-                            }`}>
+                          <td className="px-3.5 py-2">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
                               {s.status}
                             </span>
                           </td>
@@ -343,12 +318,12 @@ export const ScanModal: React.FC<ScanModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-3">
+        <div className="px-6 py-3.5 border-t border-slate-100 flex items-center justify-end gap-2.5">
           {!isScanning && !scanResult && (
             <>
               <button
                 onClick={onClose}
-                className="px-4 py-2 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm font-medium transition-colors"
+                className="px-3.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-medium transition-colors cursor-pointer"
               >
                 Cancel
               </button>
@@ -356,9 +331,9 @@ export const ScanModal: React.FC<ScanModalProps> = ({
                 onClick={handleStartScan}
                 disabled={selectedToolNames.length === 0}
                 aria-label="Execute Security Scan"
-                className="flex items-center gap-2 px-5 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
+                className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
               >
-                <Play className="w-4 h-4 fill-current" />
+                <Play className="w-3.5 h-3.5 fill-current" />
                 <span>Execute Security Scan {selectedToolNames.length > 0 ? `(${selectedToolNames.length} Tests)` : ''}</span>
               </button>
             </>
@@ -367,7 +342,7 @@ export const ScanModal: React.FC<ScanModalProps> = ({
           {scanResult && !isScanning && (
             <button
               onClick={handleFinish}
-              className="px-5 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition-colors shadow-xs"
+              className="px-4 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors shadow-xs cursor-pointer"
             >
               View Findings &amp; Posture
             </button>

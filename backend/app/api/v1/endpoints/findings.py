@@ -22,7 +22,7 @@ from ....prioritization.schemas import (
     RemediationQueueItem,
 )
 from ....prioritization.service import build_remediation_queue
-from ....schemas.finding import SecurityFindingCreate, SecurityFindingRead
+from ....schemas.finding import SecurityFindingCreate, SecurityFindingRead, SecurityFindingUpdate
 
 router = APIRouter()
 
@@ -242,4 +242,59 @@ def prioritize_finding_with_environment(
 ) -> ContextualRiskAssessment:
     finding = verify_finding_ownership(finding_id=finding_id, current_user=current_user, db=db)
     return evaluate_finding_risk(finding=finding, db=db, env_context=env_context)
+
+
+@router.patch(
+    "/{finding_id}",
+    response_model=SecurityFindingRead,
+    summary="Update finding status (e.g. mark resolved or fixed)",
+)
+def update_finding(
+    finding_id: str,
+    payload: SecurityFindingUpdate,
+    current_user: User = Depends(require_mutating_role),
+    db: Session = Depends(get_db),
+) -> SecurityFinding:
+    finding = verify_finding_ownership(finding_id=finding_id, current_user=current_user, db=db)
+    if payload.status:
+        finding.status = payload.status
+        finding.finding_status = payload.status
+    if payload.finding_status:
+        finding.status = payload.finding_status
+        finding.finding_status = payload.finding_status
+
+    db.commit()
+    db.refresh(finding)
+
+    # Recalculate repository health score
+    repo = db.query(Repository).filter(Repository.id == finding.repo_id).first()
+    if repo:
+        from sqlalchemy import func
+        counts = dict(
+            db.query(SecurityFinding.severity, func.count(SecurityFinding.id))
+            .filter(
+                SecurityFinding.repo_id == repo.id,
+                SecurityFinding.status == "open",
+            )
+            .group_by(SecurityFinding.severity)
+            .all()
+        )
+        repo.critical_count = counts.get("CRITICAL", 0)
+        repo.high_count = counts.get("HIGH", 0)
+        repo.medium_count = counts.get("MEDIUM", 0)
+        repo.low_count = counts.get("LOW", 0)
+        repo.health_score = max(0, 100 - (repo.critical_count * 25 + repo.high_count * 15 + repo.medium_count * 5 + repo.low_count * 1))
+        db.commit()
+
+    record_audit_event(
+        db=db,
+        action="FINDING_STATUS_UPDATED",
+        resource_type="finding",
+        resource_identifier=finding.id,
+        actor_id=current_user.id,
+        metadata={"new_status": finding.status, "repo_id": finding.repo_id},
+    )
+
+    return finding
+
 

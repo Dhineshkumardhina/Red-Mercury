@@ -689,6 +689,12 @@ export const api = {
   getFinding: (id: string) => 
     request<ApiFinding>(`/api/v1/findings/${encodeURIComponent(id)}`),
 
+  updateFindingStatus: (id: string, status: string) =>
+    request<ApiFinding>(`/api/v1/findings/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, finding_status: status }),
+    }),
+
   createFinding: (data: Partial<ApiFinding>) =>
     request<ApiFinding>('/api/v1/findings', {
       method: 'POST',

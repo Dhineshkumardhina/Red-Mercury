@@ -44,6 +44,8 @@ export interface SecurityFinding {
     sink: string;
   };
   remediationStatus: 'verified_patch' | 'failed_patch' | 'in_queue' | 'needs_patch';
+  status?: string;
+  codeExcerpt?: string;
   prNumber?: number;
   contextualPriority?: 'critical' | 'high' | 'medium' | 'low' | 'informational';
   priorityScore?: number;

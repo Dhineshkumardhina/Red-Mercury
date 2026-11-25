@@ -58,6 +58,11 @@ class SecurityFindingCreate(SecurityFindingBase):
     pass
 
 
+class SecurityFindingUpdate(BaseModel):
+    status: Optional[str] = None
+    finding_status: Optional[str] = None
+
+
 class SecurityFindingRead(SecurityFindingBase):
     model_config = ConfigDict(from_attributes=True)
 
